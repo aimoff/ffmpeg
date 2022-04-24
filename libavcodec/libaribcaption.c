@@ -53,13 +53,14 @@ typedef struct ARIBCaptionContext {
 
     enum AVSubtitleType subtitle_type;
     char *font_name;
-    bool replace_drcs;
+    bool replace_fullwidth_ascii;
     bool force_stroke_text;
     bool ignore_background;
     bool ignore_ruby;
     bool fadeout;
     float stroke_width;
 #ifdef ARIBCC_RENDER
+    bool replace_drcs;
     aribcc_textrenderer_type_t rendering_backend;
 #endif
 
@@ -177,6 +178,16 @@ static int set_ass_header(ARIBCaptionContext *ctx)
     return 0;
 }
 
+/**
+ * aribcaption_trans_{bitmap|ass|text}_subtitle()
+ *
+ * Transfer decoded subtitle to AVSubtitle with corresponding subtitle type.
+ *
+ * @param ctx pointer to the ARIBCaptionContext
+ * @return > 0 number of rectangles to be displayed
+ *         = 0 no subtitle
+ *         < 0 error code
+ */
 static int aribcaption_trans_bitmap_subtitle(ARIBCaptionContext *ctx)
 {
     int ret = 0;
@@ -195,14 +206,14 @@ static int aribcaption_trans_bitmap_subtitle(ARIBCaptionContext *ctx)
     if (ctx->caption.plane_width > 0 && ctx->caption.plane_height > 0 &&
         (ctx->caption.plane_width != ctx->plane_width ||
          ctx->caption.plane_height != ctx->plane_height)) {
-        ctx->plane_width = ctx->caption.plane_width;
-        ctx->plane_height = ctx->caption.plane_height;
         if (!aribcc_renderer_set_frame_size(ctx->renderer,
                                             ctx->plane_width, ctx->plane_height)) {
             av_log(ctx, AV_LOG_ERROR,
                    "aribcc_renderer_set_frame_size() returned with error.\n");
             return AVERROR_EXTERNAL;
         }
+        ctx->plane_width = ctx->caption.plane_width;
+        ctx->plane_height = ctx->caption.plane_height;
     }
 
     status = aribcc_renderer_render(ctx->renderer, ctx->pts, &ctx->render_result);
@@ -358,42 +369,23 @@ static int aribcaption_trans_ass_subtitle(ARIBCaptionContext *ctx)
     if (ctx->caption.plane_width > 0 && ctx->caption.plane_height > 0 &&
         (ctx->caption.plane_width != ctx->plane_width ||
          ctx->caption.plane_height != ctx->plane_height)) {
-        ctx->plane_width = ctx->caption.plane_width;
-        ctx->plane_height = ctx->caption.plane_height;
         if ((ret = set_ass_header(ctx)) != 0)
             goto fail;
+        ctx->plane_width = ctx->caption.plane_width;
+        ctx->plane_height = ctx->caption.plane_height;
     }
 
     av_bprint_init(&buf, ARIBCAPTION_BPRINT_SIZE_INIT, ARIBCAPTION_BPRINT_SIZE_MAX);
 
     sub->format = 0; /* graphic */
-    sub->rects = av_calloc(ctx->caption.region_count, sizeof(*sub->rects));
-    if (!sub->rects) {
-        ret = AVERROR(ENOMEM);
-        goto fail;
-    }
     if (ctx->caption.region_count == 0) {
-        sub->rects[0] = av_mallocz(sizeof(*sub->rects[0]));
-        if (!sub->rects[0]) {
-            ret = AVERROR(ENOMEM);
-            goto fail;
-        }
         /* clear previous caption for indefinite duration  */
         ff_ass_add_rect(sub, "{\\r}", ctx->readorder++, 0, NULL, NULL);
-        sub->rects[0]->type = SUBTITLE_ASS;
         return 1;
-    }
-    for (int i = 0; i < ctx->caption.region_count; i++) {
-        sub->rects[i] = av_mallocz(sizeof(*sub->rects[i]));
-        if (!sub->rects[i]) {
-            ret = AVERROR(ENOMEM);
-            goto fail;
-        }
     }
 
     rect_idx = 0;
     for (int i = 0; i < ctx->caption.region_count; i++) {
-        AVSubtitleRect *rect = ctx->sub->rects[rect_idx];
         aribcc_caption_region_t *region = &ctx->caption.regions[i];
         aribcc_color_t text_color = ARIBCC_MAKE_RGBA(0xFF, 0xFF, 0xFF, 0xFF);
         aribcc_color_t stroke_color = ARIBCC_MAKE_RGBA(0, 0, 0, 0xFF);
@@ -493,7 +485,6 @@ static int aribcaption_trans_ass_subtitle(ARIBCaptionContext *ctx)
         if (ret != 0)
             goto fail;
 
-        rect->type = SUBTITLE_ASS;
         rect_idx++;
     }
 
@@ -760,6 +751,8 @@ static int aribcaption_init(AVCodecContext *avctx)
         aribcaption_close(avctx);
         return AVERROR_EXTERNAL;
     }
+    aribcc_decoder_set_replace_msz_fullwidth_ascii(ctx->decoder,
+                                                   ctx->replace_fullwidth_ascii);
 
     switch (ctx->subtitle_type) {
     case SUBTITLE_ASS:
@@ -836,6 +829,8 @@ static int aribcaption_init(AVCodecContext *avctx)
 static const AVOption options[] = {
     { "font", "font name",
       OFFSET(font_name), AV_OPT_TYPE_STRING, { .str = DEFAULT_FAMILY }, 0, 0, SD },
+    { "replace_fullwidth_ascii", "replace MSZ fullwidth alphanumerics with halfwidth alphanumerics",
+      OFFSET(replace_fullwidth_ascii), AV_OPT_TYPE_BOOL, { .i64 = 1 }, 0, 1, SD },
     { "force_outline_text", "always render characters with outline",
       OFFSET(force_stroke_text), AV_OPT_TYPE_BOOL, { .i64 = 0 }, 0, 1, SD },
     { "ignore_background", "ignore rendering caption background",
