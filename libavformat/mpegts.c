@@ -2218,6 +2218,8 @@ int ff_parse_mpeg2_descriptor(AVFormatContext *fc, AVStream *st, int stream_type
             st->codecpar->codec_id   = AV_CODEC_ID_ARIB_CAPTION;
             st->codecpar->profile    = picked_profile;
             sti->request_probe = 0;
+            sti->need_parsing = 0;
+            sti->need_context_update = 1;
         }
         break;
     case 0xb0: /* DOVI video stream descriptor */
