@@ -19,6 +19,8 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#define MPV_WORKAROUND 1
+
 #include "avcodec.h"
 #include "internal.h"
 #include "libavcodec/ass.h"
@@ -369,13 +371,11 @@ static int aribcaption_trans_ass_subtitle(ARIBCaptionContext *ctx)
     if (ctx->caption.plane_width > 0 && ctx->caption.plane_height > 0 &&
         (ctx->caption.plane_width != ctx->plane_width ||
          ctx->caption.plane_height != ctx->plane_height)) {
-        if ((ret = set_ass_header(ctx)) != 0)
-            goto fail;
+        if ((ret = set_ass_header(ctx)) < 0)
+            return ret;
         ctx->plane_width = ctx->caption.plane_width;
         ctx->plane_height = ctx->caption.plane_height;
     }
-
-    av_bprint_init(&buf, ARIBCAPTION_BPRINT_SIZE_INIT, ARIBCAPTION_BPRINT_SIZE_MAX);
 
     sub->format = 0; /* graphic */
     if (ctx->caption.region_count == 0) {
@@ -384,6 +384,24 @@ static int aribcaption_trans_ass_subtitle(ARIBCaptionContext *ctx)
         return 1;
     }
 
+    av_bprint_init(&buf, ARIBCAPTION_BPRINT_SIZE_INIT, ARIBCAPTION_BPRINT_SIZE_MAX);
+
+#ifdef MPV_WORKAROUND
+    {
+        int x, y;
+        x = ctx->plane_width;
+        y = ctx->plane_height;
+        for (int i = 0; i < ctx->caption.region_count; i++) {
+            if (ctx->caption.regions[i].x < x)
+                x = ctx->caption.regions[i].x;
+            if (ctx->caption.regions[i].y < y)
+                y = ctx->caption.regions[i].y;
+        }
+        av_bprintf(&buf, "{\\an1}");
+        if (x > 0 || y >0)
+            av_bprintf(&buf, "{\\pos(%d,%d)}", x, y);
+    }
+#endif
     rect_idx = 0;
     for (int i = 0; i < ctx->caption.region_count; i++) {
         aribcc_caption_region_t *region = &ctx->caption.regions[i];
@@ -397,9 +415,12 @@ static int aribcaption_trans_ass_subtitle(ARIBCaptionContext *ctx)
         if (region->is_ruby && ctx->ignore_ruby)
             continue;
 
+#ifndef MPV_WORKAROUND
         av_bprint_clear(&buf);
+        av_bprintf(&buf, "{\\an1}");
         if (region->x != 0 || region->y != 0)
-            av_bprintf(&buf, "{\\an1\\pos(%d,%d)}", region->x, region->y);
+            av_bprintf(&buf, "{\\pos(%d,%d)}", region->x, region->y);
+#endif
         if (region->is_ruby)
             av_bprintf(&buf, "{\\fs%d}", char_height / 2);
         if (ctx->fadeout)
@@ -465,17 +486,22 @@ static int aribcaption_trans_ass_subtitle(ARIBCaptionContext *ctx)
                 charstyle = ch->style;
             }
             if (region->chars[j].type == ARIBCC_CHARTYPE_DRCS)
-                av_bprintf(&buf, "〓");
+                av_bprintf(&buf, "\xe3\x80\x93");  /* "〓" */
             else
                 ff_ass_bprint_text_event(&buf, ch->u8str, strlen(ch->u8str), "", 0);
         }
-        av_bprintf(&buf, "{\\r%s}",
+        av_bprintf(&buf, "{\\r}%s",
                          (i + 1 < ctx->caption.region_count) ? "\\N" : "");
+#ifdef MPV_WORKAROUND
+        ff_dlog(ctx, "ASS subtitle%s (%d,%d) %dx%d [%d]\n",
+                (region->is_ruby) ? " (ruby)" : "",
+                region->x, region->y, region->width, region->height,
+                rect_idx);
+#else
         if (!av_bprint_is_complete(&buf)) {
             ret = AVERROR(ENOMEM);
             goto fail;
         }
-
         ff_dlog(ctx, "ASS subtitle%s (%d,%d) %dx%d [%d]: %s\n",
                 (region->is_ruby) ? " (ruby)" : "",
                 region->x, region->y, region->width, region->height,
@@ -484,9 +510,21 @@ static int aribcaption_trans_ass_subtitle(ARIBCaptionContext *ctx)
         ret = ff_ass_add_rect(sub, buf.str, ctx->readorder++, 0 , NULL, NULL);
         if (ret != 0)
             goto fail;
-
         rect_idx++;
+#endif
     }
+#ifdef MPV_WORKAROUND
+    if (!av_bprint_is_complete(&buf)) {
+        ret = AVERROR(ENOMEM);
+        goto fail;
+    }
+    ff_dlog(ctx, "ASS subtitle: %s\n", buf.str);
+
+    ret = ff_ass_add_rect(sub, buf.str, ctx->readorder++, 0 , NULL, NULL);
+    if (ret != 0)
+        goto fail;
+    rect_idx++;
+#endif
 
     av_bprint_finalize(&buf, NULL);
     return rect_idx;
