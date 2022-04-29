@@ -77,6 +77,8 @@ typedef struct ARIBCaptionContext {
     AVRational time_base;
     int plane_width;
     int plane_height;
+    int frame_width;
+    int frame_height;
     int font_size;
     int charstyle;
     int border_style;
@@ -86,6 +88,7 @@ typedef struct ARIBCaptionContext {
     aribcc_render_result_t render_result;
     uint32_t *clut;
     int clut_idx;
+    int clut_overflow;
     uint8_t clut_alpha[ARIBC_ALPHA_MAX_NUM];
 } ARIBCaptionContext;
 
@@ -123,95 +126,19 @@ static void logcat_callback(aribcc_loglevel_t level, const char* message, void* 
     }
 }
 
-#ifdef PNG_SAVE
-static void png_save_sub(ARIBCaptionContext *ctx, const char *filename, uint32_t *bitmap, int w, int h)
+static void estimate_video_frame_size(ARIBCaptionContext *ctx)
 {
-    int x, y, v;
-    FILE *f;
-    char fname[40], fname2[40];
-    char command[1024];
-
-    snprintf(fname, sizeof(fname), "%s.ppm", filename);
-    f = fopen(fname, "w");
-    if (!f) {
-        perror(fname);
-        return;
-    }
-    fprintf(f, "P6\n"
-            "%d %d\n"
-            "%d\n",
-            w, h, 255);
-    for(y = 0; y < h; y++) {
-        for(x = 0; x < w; x++) {
-            v = bitmap[y * w + x];
-            putc((v >> 16) & 0xff, f);
-            putc((v >> 8) & 0xff, f);
-            putc((v >> 0) & 0xff, f);
-        }
-    }
-    fclose(f);
-
-    snprintf(fname2, sizeof(fname2), "%s-a.pgm", filename);
-    f = fopen(fname2, "w");
-    if (!f) {
-        perror(fname2);
-        return;
-    }
-    fprintf(f, "P5\n"
-            "%d %d\n"
-            "%d\n",
-            w, h, 255);
-    for(y = 0; y < h; y++) {
-        for(x = 0; x < w; x++) {
-            v = bitmap[y * w + x];
-            putc((v >> 24) & 0xff, f);
-        }
-    }
-    fclose(f);
-
-    snprintf(command, sizeof(command), "pnmtopng -alpha %s %s > %s.png 2> /dev/null", fname2, fname, filename);
-    if (system(command) != 0) {
-        av_log(ctx, AV_LOG_ERROR, "Error running pnmtopng\n");
-        return;
-    }
-
-    snprintf(command, sizeof(command), "rm %s %s", fname, fname2);
-    if (system(command) != 0) {
-        av_log(ctx, AV_LOG_ERROR, "Error removing %s and %s\n", fname, fname2);
-        return;
+    if (ctx->parent->width > 0 && ctx->parent->height > 0) {
+        ctx->frame_width = ctx->parent->width;
+        ctx->frame_height = ctx->parent->height;
+    } else if (ctx->plane_width == 960) {
+        ctx->frame_width = 1440;
+        ctx->frame_height = 1080;
+    } else {
+        ctx->frame_width = ctx->plane_width;
+        ctx->frame_height = ctx->plane_height;
     }
 }
-
-static void png_save(ARIBCaptionContext *ctx)
-{
-    AVSubtitle *sub = ctx->sub;
-    uint32_t *pbuf;
-    char filename[32];
-    static int fileno_index = 0;
-
-    pbuf = av_mallocz(ctx->plane_width * ctx->plane_height * sizeof(uint32_t));
-    if (!pbuf)
-        return;
-
-    for (int i = 0; i < ctx->render_result.image_count; i++) {
-        AVSubtitleRect *rect = sub->rects[i];
-        uint32_t *clut = (void *)rect->data[1];
-
-        for (int y = 0; y < rect->h; y++) {
-            for (int x = 0; x < rect->w; x++) {
-                pbuf[((rect->y + y) * ctx->plane_width) + rect->x + x] =
-                    clut[rect->data[0][y * rect->linesize[0] + x]];
-            }
-        }
-    }
-
-    snprintf(filename, sizeof(filename), "aribc_%03d", fileno_index);
-    png_save_sub(ctx, filename, pbuf, ctx->plane_width, ctx->plane_height);
-
-    av_freep(&pbuf);
-    fileno_index++;
-}
-#endif
 
 static void clut_set_alpha(ARIBCaptionContext *ctx, uint8_t a)
 {
@@ -292,7 +219,7 @@ static uint8_t clut_pick_or_set(ARIBCaptionContext *ctx, int r, int g, int b, in
     }
     if (d_min > 3) {
         if (ctx->clut_idx >= AVPALETTE_COUNT)
-            av_log(ctx, AV_LOG_WARNING, "CLUT overflow.\n");
+            ctx->clut_overflow++;
         else {
             c = ctx->clut_idx;
             ctx->clut[ctx->clut_idx++] = rgba;
@@ -310,6 +237,7 @@ static void clut_init(ARIBCaptionContext *ctx, aribcc_caption_region_t *region)
     ctx->clut[0] = CLUT_RGBA(0,0,0,0); /* transparent */
     ctx->clut_alpha[0] = 0xFF;
     ctx->clut_idx = 1;
+    ctx->clut_overflow = 0;
     text_color = region->chars[0].text_color;
     back_color = region->chars[0].back_color;
     stroke_color = region->chars[0].stroke_color;
@@ -368,15 +296,22 @@ static int aribcaption_trans_bitmap_subtitle(ARIBCaptionContext *ctx)
     int ret = 0;
     AVSubtitle *sub = ctx->sub;
     int status, rect_idx;
+    int old_width = ctx->frame_width;
+    int old_height = ctx->frame_height;
 
-    /* FIXME: how to get video frame size */
-#if 0
-    if (!aribcc_renderer_set_frame_size(ctx->renderer, 1440, 1080)) {
-        av_log(ctx, AV_LOG_ERROR,
-               "aribcc_renderer_set_frame_size() returned with error.\n");
-        return AVERROR_EXTERNAL;
+    if (ctx->caption.plane_width > 0 && ctx->caption.plane_height > 0) {
+        ctx->plane_width = ctx->caption.plane_width;
+        ctx->plane_height = ctx->caption.plane_height;
     }
-#endif
+    estimate_video_frame_size(ctx);
+    if (ctx->frame_width != old_width || ctx->frame_height != old_height) {
+        if (!aribcc_renderer_set_frame_size(ctx->renderer,
+                                 ctx->parent->width, ctx->parent->height)) {
+            av_log(ctx, AV_LOG_ERROR,
+                   "aribcc_renderer_set_frame_size() returned with error.\n");
+            return AVERROR_EXTERNAL;
+        }
+    }
 
     status = aribcc_renderer_append_caption(ctx->renderer, &ctx->caption);
     if (!status) {
@@ -476,6 +411,8 @@ static int aribcaption_trans_bitmap_subtitle(ARIBCaptionContext *ctx)
                 image->dst_x, image->dst_y,
                 image->width, image->stride / 4, image->height,
                 rect_idx, ctx->clut_idx);
+        if (ctx->clut_overflow)
+            av_log(ctx, AV_LOG_WARNING, "CLUT overflow (%d).\n", ctx->clut_overflow);
 
         rect->x = image->dst_x;
         rect->y = image->dst_y;
@@ -487,20 +424,14 @@ static int aribcaption_trans_bitmap_subtitle(ARIBCaptionContext *ctx)
     }
     sub->num_rects = rect_idx;
 
-#ifdef PNG_SAVE
-    png_save(ctx);
-#endif
-
     return rect_idx;
 
 fail:
     if (sub->rects) {
         for (int i = 0; i < ctx->caption.region_count; i++) {
             if (sub->rects[i]) {
-                if (sub->rects[i]->data[0])
-                    av_freep(&sub->rects[i]->data[0]);
-                if (sub->rects[i]->data[1])
-                    av_freep(&sub->rects[i]->data[1]);
+                av_freep(&sub->rects[i]->data[0]);
+                av_freep(&sub->rects[i]->data[1]);
                 av_freep(&sub->rects[i]);
             }
         }
@@ -767,8 +698,7 @@ fail:
     if (sub->rects) {
         for (int i = 0; i < ctx->caption.region_count; i++) {
             if (sub->rects[i]) {
-                if (sub->rects[i]->ass)
-                    av_freep(&sub->rects[i]->ass);
+                av_freep(&sub->rects[i]->ass);
                 av_freep(&sub->rects[i]);
             }
         }
@@ -822,8 +752,7 @@ fail:
     if (sub->rects) {
         rect = sub->rects[0];
         if (rect) {
-            if (rect->text)
-                av_freep(&rect->text);
+            av_freep(&rect->text);
             av_freep(&rect);
         }
         av_freep(&sub->rects);
@@ -939,8 +868,6 @@ static int aribcaption_close(AVCodecContext *avctx)
 
     aribcaption_flush(avctx);
 
-    if (avctx->subtitle_header)
-        av_freep(&avctx->subtitle_header);
     if (ctx->clut)
         av_freep(&ctx->clut);
     if (ctx->renderer) {
@@ -1050,8 +977,9 @@ static int aribcaption_init(AVCodecContext *avctx)
             aribcaption_close(avctx);
             return AVERROR_EXTERNAL;
         }
+        estimate_video_frame_size(ctx);
         if (!aribcc_renderer_set_frame_size(ctx->renderer,
-                                            ctx->plane_width, ctx->plane_height)) {
+                                            ctx->frame_width, ctx->frame_height)) {
             av_log(ctx, AV_LOG_ERROR,
                    "aribcc_renderer_set_frame_size() returned with error.\n");
             return AVERROR_EXTERNAL;
