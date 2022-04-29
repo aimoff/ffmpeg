@@ -53,7 +53,7 @@
 
 typedef struct ARIBCaptionContext {
     AVClass *class;
-    AVCodecContext *parent;
+    AVCodecContext *avctx;
     AVPacket *avpkt;
     AVSubtitle *sub;
 
@@ -128,10 +128,12 @@ static void logcat_callback(aribcc_loglevel_t level, const char* message, void* 
 
 static void estimate_video_frame_size(ARIBCaptionContext *ctx)
 {
-    if (ctx->parent->width > 0 && ctx->parent->height > 0) {
-        ctx->frame_width = ctx->parent->width;
-        ctx->frame_height = ctx->parent->height;
+    if (ctx->avctx->width > 0 && ctx->avctx->height > 0) {
+        ctx->frame_width = ctx->avctx->width;
+        ctx->frame_height = ctx->avctx->height;
     } else if (ctx->plane_width == 960) {
+        /* ARIB TR-B14 Fascicle 2 Volume 3 [Section 2] 4.3.1 */
+        /* ARIB TR-B14 Fascicle 2 Volume 3 [Section 2] Appendix-4 */
         ctx->frame_width = 1440;
         ctx->frame_height = 1080;
     } else {
@@ -306,7 +308,7 @@ static int aribcaption_trans_bitmap_subtitle(ARIBCaptionContext *ctx)
     estimate_video_frame_size(ctx);
     if (ctx->frame_width != old_width || ctx->frame_height != old_height) {
         if (!aribcc_renderer_set_frame_size(ctx->renderer,
-                                 ctx->parent->width, ctx->parent->height)) {
+                                 ctx->avctx->width, ctx->avctx->height)) {
             av_log(ctx, AV_LOG_ERROR,
                    "aribcc_renderer_set_frame_size() returned with error.\n");
             return AVERROR_EXTERNAL;
@@ -444,7 +446,7 @@ fail:
 
 static int set_ass_header(ARIBCaptionContext *ctx)
 {
-    AVCodecContext *avctx = ctx->parent;
+    AVCodecContext *avctx = ctx->avctx;
     int outline, shadow;
 
     if (ctx->border_style == 4) {
@@ -893,7 +895,7 @@ static int aribcaption_init(AVCodecContext *avctx)
     aribcc_encoding_scheme_t encode_scheme;
     int ret = 0;
 
-    ctx->parent = avctx;
+    ctx->avctx = avctx;
 
     switch (avctx->profile) {
     case FF_PROFILE_ARIB_PROFILE_A:
