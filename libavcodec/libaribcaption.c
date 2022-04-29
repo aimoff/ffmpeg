@@ -965,10 +965,6 @@ static int aribcaption_init(AVCodecContext *avctx)
             aribcaption_close(avctx);
             return AVERROR_EXTERNAL;
         }
-        aribcc_renderer_initialize(ctx->renderer,
-                                   ARIBCC_CAPTIONTYPE_CAPTION,
-                                   ARIBCC_FONTPROVIDER_TYPE_AUTO,
-                                   ARIBCC_TEXTRENDERER_TYPE_AUTO);
         if(!aribcc_renderer_initialize(ctx->renderer,
                                        ARIBCC_CAPTIONTYPE_CAPTION,
                                        ARIBCC_FONTPROVIDER_TYPE_AUTO,
