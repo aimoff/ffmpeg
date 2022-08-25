@@ -2830,6 +2830,76 @@ static void eit_cb(MpegTSFilter *filter, const uint8_t *section, int section_len
                     av_free(txt);
                 }
                 break;
+            case 0xc4:  /* ARIB STD B10 Audio component descriptor */
+                {
+                    int component_type, component_tag, stream_type, flags;
+                    AVStream *stream;
+                    char *txt;
+
+                    val = get8(&p, desc_end); /* stream_content 0x2: audio */
+                    if (val < 0 || (val & 0xF) != 0x2)
+                        break;
+                    component_type = get8(&p, desc_end);
+                    if (component_type < 0)
+                        break;
+                    component_tag = get8(&p, desc_end);
+                    if (component_tag < 0)
+                        break;
+
+                    stream = find_matching_stream(ts, 0, h->id,
+                                                  component_tag + 1, 0, prg);
+                    if (!stream)
+                        break;
+
+                    stream_type = get8(&p, desc_end);
+                    if (stream_type < 0)
+                        break;
+
+                    if (component_type == 0x02) {
+                        uint8_t *sd;
+                        sd = av_stream_get_side_data(stream,
+                                 AV_PKT_DATA_JP_DUALMONO, NULL);
+                        if (sd == NULL ) {
+                            sd = av_stream_new_side_data(stream,
+                                     AV_PKT_DATA_JP_DUALMONO, 1);
+                            if (!sd)
+                                break;
+                            *sd = 0; /* initialize to main/left */
+                            ffstream(stream)->need_context_update = 1;
+                        }
+                    }
+#if 0
+                    av_dict_set_int(&stream->metadata, "isdmono",
+                                    (component_type == 0x02), 0);
+#endif
+
+                    val = get8(&p, desc_end); /* group_tag */
+                    if (val < 0)
+                        break;
+                    flags = get8(&p, desc_end);
+                    if (flags < 0)
+                        break;
+
+                    if (getlanguage(language, &p, desc_end) < 0)
+                        break;
+                    if (flags & 0x80) { /* ES_multi_lingual flag */
+                        language[3] = ',';
+                        if (getlanguage(language + 4, &p, desc_end) < 0)
+                            break;
+                        language[7] = '\0';
+                    } else {
+                        language[3] = '\0';
+                    }
+                    av_dict_set(&stream->metadata, "language", language, 0);
+                    stream->event_flags |= AVSTREAM_EVENT_FLAG_METADATA_UPDATED;
+
+                    txt = getstr8n(ts, &p, desc_end - p, NULL);
+                    av_log(ts->stream, AV_LOG_TRACE,
+                           "prog:%d audio[pid:0x%04x tag:0x%02x](%s) stream_type:%02x component_type:%02x %s\n",
+                           program->id, stream->id, component_tag, language, stream_type, component_type, txt);
+                    av_free(txt);
+                }
+                break;
             default:
                 break;
             }
