@@ -2899,6 +2899,91 @@ static void eit_cb(MpegTSFilter *filter, const uint8_t *section, int section_len
                     av_free(txt);
                 }
                 break;
+            case 0xc7:    /* ARIB STD B10 Data content(s) descriptor */
+                {
+                    int n, data_component_id, entry_component;
+                    AVStream *stream;
+                    const uint8_t *selector_end;
+                    char *txt;
+                    int i;
+
+                    data_component_id = get16(&p, desc_end);
+                    if (data_component_id < 0)
+                        break;
+                    entry_component = get8(&p, desc_end);
+                    if (entry_component < 0)
+                        break;
+
+                    stream = find_matching_stream(ts, 0, h->id,
+                                                  entry_component + 1, 0, prg);
+                    if (!stream)
+                        break;
+
+                    /* parse ARIB-subtitle & teletext only */
+                    /* ARIB STD B10 part 2, Annex J */
+                    if (data_component_id != 0x0008 && data_component_id != 0x0012) {
+                        av_log(ts->stream, AV_LOG_TRACE,
+                               "prog:%d pid:0x%04x tag:0x%02x data_component_id:0x%x\n",
+                               program->id, stream->id, entry_component, data_component_id);
+                        break;
+                    }
+
+                    n = get8(&p, desc_end);
+                    if (n < 0)
+                        break;
+                    selector_end = p + n;
+                    if (selector_end > desc_end)
+                        break;
+
+                    /* Selector: ARIB STD B24 Fascicle 1 Part 3 Chapter 9 Table 9-17 */
+                    n = get8(&p, selector_end);
+                    if (n < 0)
+                        break;
+                    for (i = 0; i < n; i++) {
+                        val = get8(&p, selector_end); /* language_tag, dmf */
+                        if (val < 0)
+                            break;
+                        if (getlanguage(language + i * 4, &p, selector_end) < 0)
+                            break;
+                        language[i * 4 + 3] = ',';
+                    }
+                    if (i != n)
+                        break;
+                    language[i * 4 - 1] = '\0';
+                    p = selector_end; /* to be safe */
+
+                    av_dict_set(&stream->metadata, "language", language, 0);
+                    stream->event_flags |= AVSTREAM_EVENT_FLAG_METADATA_UPDATED;
+
+                    /* other component streams affected by this event */
+                    /* ARIB TR-B14 Fascicle 2, Vol. 3, Section 2, 4.2.8.7 */
+                    /* num_of_component_ref should be 0: no contents */
+                    n = get8(&p, desc_end);
+                    if (n < 0)
+                        break;
+                    for (i = 0; i < n; i++) {
+                        val = get8(&p, desc_end);
+                        if (val < 0)
+                            break;
+                    }
+                    if (i != n)
+                        break;
+
+                    {
+                        char lang[4];
+                        if (getlanguage(lang, &p, desc_end) < 0)
+                            break;
+                        lang[3] = '\0';
+                        txt = getstr8(ts, &p, desc_end, lang);
+                    }
+                    if (!txt)
+                        break;
+                    av_log(ts->stream, AV_LOG_TRACE,
+                           "prog:%d arib subtitle[pid:0x%04x tag:0x%02x](%s) %s\n",
+                           program->id, stream->id, entry_component, language, txt);
+                    av_free(txt);
+                }
+                break;
             default:
                 break;
             }
