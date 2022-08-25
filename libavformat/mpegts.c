@@ -125,6 +125,8 @@ struct Program {
 
     /** have we found pmt for this program */
     int pmt_found;
+
+    int eit_version;
 };
 
 struct MpegTSContext {
@@ -306,6 +308,7 @@ static void clear_program(struct Program *p)
     p->nb_pids = 0;
     p->nb_streams = 0;
     p->pmt_found = 0;
+    p->eit_version = -1;
 }
 
 static void clear_programs(MpegTSContext *ts)
@@ -2622,8 +2625,12 @@ static void pat_cb(MpegTSFilter *filter, const uint8_t *section, int section_len
 static void eit_cb(MpegTSFilter *filter, const uint8_t *section, int section_len)
 {
     MpegTSContext *ts = filter->u.section_filter.opaque;
-    const uint8_t *p, *p_end;
+    const uint8_t *p, *p_end, *desc_list_end, *desc_end;
     SectionHeader h1, *h = &h1;
+    AVProgram *program;
+    struct Program *prg;
+    int desc_len;
+    char language[252];
 
     /*
      * Sometimes we receive EPG packets but SDT table do not have
@@ -2651,6 +2658,7 @@ static void eit_cb(MpegTSFilter *filter, const uint8_t *section, int section_len
         return;
 
     av_log(ts->stream, AV_LOG_TRACE, "EIT: tid received = %.02x\n", h->tid);
+    hex_dump_debug(ts->stream, section, section_len);
 
     /**
      * Service_id 0xFFFF is reserved, it indicates that the current EIT table
@@ -2670,7 +2678,124 @@ static void eit_cb(MpegTSFilter *filter, const uint8_t *section, int section_len
 
     new_data_packet(section, section_len, ts->pkt);
     ts->pkt->stream_index = ts->epg_stream->index;
-    ts->stop_parse = 1;
+
+    /* parse present event of actual TS stream only */
+    if (h->tid != EIT_TID)
+        return;
+    if (!h->current_next)
+        return;
+    if (ts->skip_changes)
+        return;
+
+    av_log(ts->stream, AV_LOG_TRACE, "sid=0x%x sec_num=%d/%d version=%d\n",
+           h->id, h->sec_num, h->last_sec_num, h->version);
+
+    /* DVB-SI Guidelines (TS 101 211) 4.1.4.1 */
+    /* 0x00 indicates present event, 0x01 indicates following event */
+    /* 0x02 and after is optional */
+    if (h->sec_num > 0)
+        return;
+
+    program = NULL;
+    for (int i = 0; i < ts->stream->nb_programs; i++)
+        if (ts->stream->programs[i]->id == h->id)
+            program = ts->stream->programs[i];
+    if (!program || program->nb_stream_indexes <= 0)
+        return;
+
+    prg = get_program(ts, h->id);
+    if (!prg)
+        return;
+    if (h->version == prg->eit_version)
+        return;
+    prg->eit_version = h->version;
+
+    /* skip ts_id, original_network_id, last_section_no, last_table_id */
+    if (p + 6 > p_end)
+        return;
+    p += 6;
+
+    for (;;) {
+        int eid, val;
+
+        eid = get16(&p, p_end);
+        if (eid < 0)
+            break;
+        {
+            int hh, mm, ss, d_hh, d_mm, d_ss, running_status;
+            val = get16(&p, p_end); /* Date */
+            if (val < 0)
+                break;
+            hh = get8(&p, p_end);
+            if (hh < 0)
+                break;
+            mm = get8(&p, p_end);
+            if (mm < 0)
+                break;
+            ss = get8(&p, p_end);
+            if (ss < 0)
+                break;
+            d_hh = get8(&p, p_end);
+            if (d_hh < 0)
+                break;
+            d_mm = get8(&p, p_end);
+            if (d_mm < 0)
+                break;
+            d_ss = get8(&p, p_end);
+            if (d_ss < 0)
+                break;
+            desc_len = get16(&p, p_end);
+            if (desc_len < 0)
+                break;
+            running_status = (desc_len & 0xe000) >> 5;
+            av_log(ts->stream, AV_LOG_TRACE,
+                   "eid=0x%04x start %02x:%02x:%02x duration %02x:%02x:%02x running_status=%d\n",
+                   eid, hh, mm, ss, d_hh, d_mm, d_ss, running_status);
+        }
+        desc_len &= 0x0fff;
+        desc_list_end = p + desc_len;
+        if (desc_list_end > p_end)
+            break;
+
+        for (;;) {
+            int desc_tag;
+
+            desc_tag = get8(&p, desc_list_end);
+            if (desc_tag < 0)
+                break;
+            desc_len = get8(&p, desc_list_end);
+            desc_end = p + desc_len;
+            if (desc_len < 0 || desc_end > desc_list_end)
+                break;
+
+            av_log(ts->stream, AV_LOG_DEBUG, "tag: 0x%02x len=%d\n",
+                   desc_tag, desc_len);
+
+            switch (desc_tag) {
+            case 0x4d:  /* short event descriptor */
+                {
+                    char *txt;
+
+                    if (desc_len < 3)
+                        break;
+                    language[0] = get8(&p, desc_end);
+                    language[1] = get8(&p, desc_end);
+                    language[2] = get8(&p, desc_end);
+                    language[3] = '\0';
+                    txt = getstr8(&p, desc_end);
+                    if (!txt)
+                        break;
+                    av_dict_set(&program->metadata, "title", txt, 0);
+                    av_free(txt);
+                }
+                break;
+            default:
+                break;
+            }
+            p = desc_end;
+        }
+        p = desc_list_end;
+    }
 }
 
 static void sdt_cb(MpegTSFilter *filter, const uint8_t *section, int section_len)
