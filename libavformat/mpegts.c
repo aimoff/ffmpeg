@@ -46,6 +46,7 @@
 #include "isom.h"
 #if CONFIG_ICONV
 #include <iconv.h>
+#include "libavutil/avstring.h"
 #endif
 
 /* maximum size in which we look for synchronization if
@@ -168,6 +169,8 @@ struct MpegTSContext {
     int resync_size;
     int merge_pmt_versions;
     int max_packet_size;
+    /* give higher priority to Japanese ARIB standard than DVB when conflict */
+    int precede_arib;
 
     /******************************************/
     /* private mpegts data */
@@ -206,6 +209,9 @@ static const AVOption options[] = {
      {.i64 = 0}, 0, 1, 0 },
     {"max_packet_size", "maximum size of emitted packet", offsetof(MpegTSContext, max_packet_size), AV_OPT_TYPE_INT,
      {.i64 = 204800}, 1, INT_MAX/2, AV_OPT_FLAG_DECODING_PARAM },
+    {"precede_arib", "give higher priority to Japanese ARIB STD than DVB", offsetof(MpegTSContext, precede_arib), AV_OPT_TYPE_BOOL,
+     {.i64 = 0}, 0, 1, AV_OPT_FLAG_DECODING_PARAM },
+
     { NULL },
 };
 
@@ -694,18 +700,14 @@ static inline int get16(const uint8_t **pp, const uint8_t *p_end)
     return c;
 }
 
-/* read and allocate a DVB string preceded by its length */
-static char *getstr8(const uint8_t **pp, const uint8_t *p_end)
+/* read and allocate a DVB or ARIB B24 string */
+static char *getstr8n(MpegTSContext *ts, const uint8_t **pp, int len, char *lang)
 {
-    int len;
     const uint8_t *p;
     char *str;
 
     p   = *pp;
-    len = get8(&p, p_end);
     if (len < 0)
-        return NULL;
-    if (len > p_end - p)
         return NULL;
 #if CONFIG_ICONV
     if (len) {
@@ -716,23 +718,42 @@ static char *getstr8(const uint8_t **pp, const uint8_t *p_end)
             "", "UCS-2BE", "KSC_5601", "GB2312", "UCS-2BE", "UTF-8", "", "",
             "", "", "", "", "", "", "", ""
         };
-        iconv_t cd;
+        iconv_t cd = (iconv_t)-1;
         char *in, *out;
         size_t inlen = len, outlen = inlen * 6 + 1;
         if (len >= 3 && p[0] == 0x10 && !p[1] && p[2] && p[2] <= 0xf && p[2] != 0xc) {
+            /* DVB Blue Book A038 (EN 300 468) Annex A.2 Table A.4 */
             char iso8859[12];
             snprintf(iso8859, sizeof(iso8859), "ISO-8859-%d", p[2]);
             inlen -= 3;
             in = (char *)p + 3;
             cd = iconv_open("UTF-8", iso8859);
-        } else if (p[0] < 0x20) {
+        } else if (p[0] < 0x20 && *encodings[p[0]] != '\0') {
+            /* DVB Blue Book A038 (EN 300 468) Annex A.2 Table A.3 */
             inlen -= 1;
             in = (char *)p + 1;
             cd = iconv_open("UTF-8", encodings[*p]);
+        } else if (p[0] == 0x1f) {
+            /* ETSI TS 101 162 Section 5.5 */
+            /* depending on encoding type id */
+            // uint8_t encoding_type_id = p[1];
+            inlen -= 2;
+            in = (char *)p + 2;
+            /* no public specification */
         } else {
             in = (char *)p;
-            cd = iconv_open("UTF-8", encodings[0]);
+            if (ts->precede_arib || p[0] == 0x0E || p[0] == 0x0F || p[0] == 0x1b) {
+                /* Japanese ARIB STD B24 Fascicle 1 Part 2 Chapter 7 */
+                /* 0x0E, 0x0F and 0x1b are used to switch code set as shown in Table 7-1 and 7-2 */
+                cd = iconv_open("UTF-8", "ARIB-B24");
+            } else if (lang) { /* assume language specific encoding */
+                if (!av_strncasecmp(lang, "jpn", 3)) {
+                    cd = iconv_open("UTF-8", "ARIB-B24");
+                }
+            }
         }
+        if (cd == (iconv_t)-1) /* fallback */
+            cd = iconv_open("UTF-8", encodings[0]);
         if (cd == (iconv_t)-1)
             goto no_iconv;
         str = out = av_malloc(outlen);
@@ -760,6 +781,18 @@ no_iconv:
     p  += len;
     *pp = p;
     return str;
+}
+
+/* read and allocate a DVB string preceded by its length */
+static char *getstr8(MpegTSContext *ts, const uint8_t **pp, const uint8_t *p_end, char *lang)
+{
+    int len;
+
+    len = get8(pp, p_end);
+    if (len < 0 || len > p_end - *pp)
+        return NULL;
+
+    return getstr8n(ts, pp, len, lang);
 }
 
 static int parse_section_header(SectionHeader *h,
@@ -2781,7 +2814,7 @@ static void eit_cb(MpegTSFilter *filter, const uint8_t *section, int section_len
                     language[1] = get8(&p, desc_end);
                     language[2] = get8(&p, desc_end);
                     language[3] = '\0';
-                    txt = getstr8(&p, desc_end);
+                    txt = getstr8(ts, &p, desc_end, language);
                     if (!txt)
                         break;
                     av_dict_set(&program->metadata, "title", txt, 0);
@@ -2859,10 +2892,10 @@ static void sdt_cb(MpegTSFilter *filter, const uint8_t *section, int section_len
                 service_type = get8(&p, desc_end);
                 if (service_type < 0)
                     break;
-                provider_name = getstr8(&p, desc_end);
+                provider_name = getstr8(ts, &p, desc_end, NULL);
                 if (!provider_name)
                     break;
-                name = getstr8(&p, desc_end);
+                name = getstr8(ts, &p, desc_end, NULL);
                 if (name) {
                     AVProgram *program = av_new_program(ts->stream, sid);
                     if (program) {
