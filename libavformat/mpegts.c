@@ -699,6 +699,17 @@ static inline int get16(const uint8_t **pp, const uint8_t *p_end)
     return c;
 }
 
+/* copy ISO-639 language code (destination requires 3 bytes or more) */
+static inline int getlanguage(char *language, const uint8_t **pp, const uint8_t *p_end)
+{
+    if (*pp + 3 > p_end)
+        return AVERROR_INVALIDDATA;
+    language[0] = get8(pp, p_end);
+    language[1] = get8(pp, p_end);
+    language[2] = get8(pp, p_end);
+    return 0;
+}
+
 /* read and allocate a DVB or ARIB B24 string */
 static char *getstr8n(MpegTSContext *ts, const uint8_t **pp, int len, char *lang)
 {
@@ -2809,11 +2820,8 @@ static void eit_cb(MpegTSFilter *filter, const uint8_t *section, int section_len
                 {
                     char *txt;
 
-                    if (desc_len < 3)
+                    if (getlanguage(language, &p, desc_end) < 0)
                         break;
-                    language[0] = get8(&p, desc_end);
-                    language[1] = get8(&p, desc_end);
-                    language[2] = get8(&p, desc_end);
                     language[3] = '\0';
                     txt = getstr8(ts, &p, desc_end, language);
                     if (!txt)
