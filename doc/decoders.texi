@@ -353,6 +353,105 @@ Enabled by default.
 
 @end table
 
+@section aribcaption
+
+Yet another ARIB STD-B24 caption decoder using external @dfn{libaribcaption}
+library.
+
+Implements profiles A and C of the Japanse ARIB STD-B24 standard,
+Brazilian ABNT NBR 15606-1, and Philippines version of ISDB-T.
+
+Requires the presence of the libaribcaption headers and library
+(@url{https://github.com/xqq/libaribcaption}) during configuration.
+You need to explicitly configure the build with @code{--enable-libaribcaption}.
+If both @dfn{libaribb24} and @dfn{aribcaption} are enabled, @dfn{aribcaption}
+decoder precedes.
+
+@subsection aribcaption Decoder Options
+
+@table @option
+
+@item -sub_type @var{subtitle_type}
+Specifies the format of the decoded subtitles.
+
+@table @samp
+@item bitmap
+Graphical image.
+@item ass
+ASS formatted text.
+@item text
+Simple text based output without formatting.
+@end table
+
+The default is @dfn{ass} as same as @dfn{libaribb24} decoder.
+Some present players (e.g., @dfn{mpv}) expect ASS format for ARIB caption.
+
+@item -font @var{font_name[,font_name2,...]}
+Specify comma-separated list of font family names to be used for @dfn{bitmap}
+or @dfn{ass} type subtitle rendering.
+Only first font name is used for @dfn{ass} type subtitle.
+
+If not specified, use internaly defined default font family.
+
+@item -ass_workaround @var{boolean}
+Since some players (e.g., @dfn{mpv}) can't handle multi-rectangle ASS
+subtitle properly, default behavior is all the texts are displayed in
+a single-rectangle at a time.
+It causes some texts may not be displayed at expected position as described
+in ARIB STD-B24.
+
+The default is @var{true}.
+
+If a player can handle multi-rectangle ASS subtitle and you prefer
+more suitable positioning, set this option to @var{false} or define
+@env{ASS_WORKAROUND=0} to change default behavior at compilation.
+
+@item -replace_fullwidth_ascii @var{boolean}
+Specify whether to replace MSZ (Middle Size, half width) fullwidth
+alphanumerics with halfwidth alphanumerics.
+
+The default is @var{true}.
+
+@item -force_outline_text @var{boolean}
+Specify whether always render outline text for all characters regardless of
+the indication by charactor style.
+
+The default is @var{false}.
+
+@item -outline_width @var{number} (0.0 - 3.0)
+Specify width for outline text, in dots (relative).
+
+The default is @var{1.5}.
+
+@item -ignore_background @var{boolean}
+Specify whether to ignore background color rendering.
+
+The default is @var{false}.
+
+@item -ignore_ruby @var{boolean}
+Specify whether to ignore rendering for ruby-like (furigana) characters.
+
+The default is @var{false}.
+
+@item -replace_drcs @var{boolean}
+Specify whether to render replaced DRCS characters as Unicode characters.
+
+The default is @var{true}.
+
+@end table
+
+@subsection aribcaption decoder usage examples
+
+Display MPEG-TS file with ARIB subtitle by @dfn{ffplay} tool:
+@example
+ffplay -sub_type bitmap MPEG.TS
+@end example
+
+Embed ARIB subtitle in transcoded video:
+@example
+ffmpeg -sub_type bitmap -i src.m2t -filter_complex "[0:v][0:s]overlay" -vcodec h264 dest.mp4
+@end example
+
 @section dvbsub
 
 @subsection Options
