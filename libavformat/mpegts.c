@@ -2146,6 +2146,7 @@ int ff_parse_mpeg2_descriptor(AVFormatContext *fc, AVStream *st, int stream_type
             // Vol. 3, Section 2, 4.2.8.1
             int actual_component_tag = sti->stream_identifier - 1;
             int picked_profile = FF_PROFILE_UNKNOWN;
+            AVStream *v_st = NULL;
             int data_component_id = get16(pp, desc_end);
             if (data_component_id < 0)
                 return AVERROR_INVALIDDATA;
@@ -2156,7 +2157,12 @@ int ff_parse_mpeg2_descriptor(AVFormatContext *fc, AVStream *st, int stream_type
                 // non-mobile captioning service ("profile A").
                 if (actual_component_tag >= 0x30 &&
                     actual_component_tag <= 0x37) {
+                    int v_index;
                     picked_profile = FF_PROFILE_ARIB_PROFILE_A;
+                    v_index = av_find_best_stream(fc, AVMEDIA_TYPE_VIDEO,
+                                                  -1, 1, NULL, 0);
+                    if (v_index >= 0)
+                        v_st = fc->streams[v_index];
                 }
                 break;
             case 0x0012:
@@ -2175,8 +2181,19 @@ int ff_parse_mpeg2_descriptor(AVFormatContext *fc, AVStream *st, int stream_type
 
             st->codecpar->codec_type = AVMEDIA_TYPE_SUBTITLE;
             st->codecpar->codec_id   = AV_CODEC_ID_ARIB_CAPTION;
-            st->codecpar->profile    = picked_profile;
+            if (st->codecpar->profile != picked_profile) {
+                st->codecpar->profile = picked_profile;
+                sti->need_context_update = 1;
+            }
+            if (v_st &&
+                (st->codecpar->width != v_st->codecpar->width ||
+                 st->codecpar->height != v_st->codecpar->height)) {
+                st->codecpar->width = v_st->codecpar->width;
+                st->codecpar->height = v_st->codecpar->height;
+                sti->need_context_update = 1;
+            }
             sti->request_probe = 0;
+            sti->need_parsing = 0;
         }
         break;
     case 0xb0: /* DOVI video stream descriptor */
