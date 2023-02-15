@@ -31,8 +31,8 @@
 
 #include <aribcaption/aribcaption.h>
 
-#if !defined(DEFAULT_FONT_FAMILY)
-# define DEFAULT_FONT_FAMILY "sans-serif"
+#if !defined(DEFAULT_FONT_ASS)
+# define DEFAULT_FONT_ASS "sans-serif"
 #endif
 
 #define ARIBC_BPRINT_SIZE_INIT         64
@@ -67,7 +67,8 @@ typedef struct ARIBCaptionContext {
     aribcc_renderer_t *renderer;
 
     enum AVSubtitleType subtitle_type;
-    bool ass_workaround;
+    enum aribcc_encoding_scheme_t encoding_scheme;
+    bool ass_single_rect;
     char *font;
     bool replace_fullwidth_ascii;
     bool force_stroke_text;
@@ -78,6 +79,8 @@ typedef struct ARIBCaptionContext {
 
     int64_t pts;
     AVRational time_base;
+    int canvas_width;
+    int canvas_height;
     int plane_width;
     int plane_height;
     int frame_width;
@@ -101,7 +104,7 @@ static void hex_dump_debug(void *ctx, const char *buf, int buf_size)
 {
     int i;
 
-    for (i=0; i < buf_size; i++) {
+    for (i = 0; i < buf_size; i++) {
         ff_dlog(ctx, "%02hhx ", buf[i]);
         if (i % 16 == 15)
             ff_dlog(ctx, "\n");
@@ -134,6 +137,7 @@ static void logcat_callback(aribcc_loglevel_t level, const char* message, void* 
 static void estimate_video_frame_size(ARIBCaptionContext *ctx)
 {
     if (ctx->avctx->width > 0 && ctx->avctx->height > 0) {
+        /* input video size specified by -canvas_size option */
         ctx->bitmap_plane_width = ctx->avctx->width;
         ctx->bitmap_plane_height = ctx->avctx->height;
     } else if (ctx->plane_width == 960) {
@@ -145,6 +149,7 @@ static void estimate_video_frame_size(ARIBCaptionContext *ctx)
         ctx->bitmap_plane_width = ctx->plane_width;
         ctx->bitmap_plane_height = ctx->plane_height;
     }
+
     /* Expand either width or height */
     if (ctx->bitmap_plane_height * ctx->plane_width > ctx->bitmap_plane_width * ctx->plane_height) {
         ctx->frame_height = ctx->bitmap_plane_height;
@@ -327,6 +332,11 @@ static int aribcaption_trans_bitmap_subtitle(ARIBCaptionContext *ctx)
                    "aribcc_renderer_set_frame_size() returned with error.\n");
             return AVERROR_EXTERNAL;
         }
+        ff_dlog(ctx, "canvas: %dx%d  plane: %dx%d  bitmap: %dx%d  frame: %dx%d\n",
+                ctx->canvas_width, ctx->canvas_height,
+                ctx->plane_width, ctx->plane_height,
+                ctx->bitmap_plane_width, ctx->bitmap_plane_height,
+                ctx->frame_width, ctx->frame_height);
     }
 
     status = aribcc_renderer_append_caption(ctx->renderer, &ctx->caption);
@@ -497,12 +507,11 @@ static int set_ass_header(ARIBCaptionContext *ctx)
     if (fonts && *fonts)
         font_name = av_get_token(&fonts, ",");
     else
-        font_name = av_strdup(DEFAULT_FONT_FAMILY);
+        font_name = av_strdup(DEFAULT_FONT_ASS);
     if (!font_name)
         return AVERROR(ENOMEM);
 
-    if (avctx->subtitle_header)
-        av_freep(&avctx->subtitle_header);
+    av_freep(&avctx->subtitle_header);
     avctx->subtitle_header = av_asprintf(
             "[Script Info]\r\n"
             "ScriptType: v4.00+\r\n"
@@ -556,9 +565,9 @@ static void set_ass_color(AVBPrint *buf, int color_num,
     if (ARIBCC_COLOR_DIFF_RGB(new_color, old_color))
         av_bprintf(buf, "{\\%dc&H%06x&}", color_num,
                                           ARIBCC_COLOR_RGB(new_color));
-    if (ARIBCC_COLOR_DIFF_A(new_color, old_color) && ARIBCC_COLOR_A(new_color))
+    if (ARIBCC_COLOR_DIFF_A(new_color, old_color))
         av_bprintf(buf, "{\\%da&H%02x&}", color_num,
-                                          ARIBCC_COLOR_A(new_color));
+                                          0xFF - ARIBCC_COLOR_A(new_color));
 }
 
 static int aribcaption_trans_ass_subtitle(ARIBCaptionContext *ctx)
@@ -579,13 +588,13 @@ static int aribcaption_trans_ass_subtitle(ARIBCaptionContext *ctx)
     sub->format = 1; /* text */
     if (ctx->caption.region_count == 0) {
         /* clear previous caption for indefinite duration  */
-        ff_ass_add_rect(sub, "{\\r}", ctx->readorder++, 0, NULL, NULL);
+        ff_ass_add_rect(sub, "", ctx->readorder++, 0, NULL, NULL);
         return 1;
     }
 
     av_bprint_init(&buf, ARIBC_BPRINT_SIZE_INIT, ARIBC_BPRINT_SIZE_MAX);
 
-    if (ctx->ass_workaround) {
+    if (ctx->ass_single_rect) {
         int x, y;
         x = ctx->plane_width;
         y = ctx->plane_height;
@@ -617,7 +626,7 @@ static int aribcaption_trans_ass_subtitle(ARIBCaptionContext *ctx)
         if (region->is_ruby && ctx->ignore_ruby)
             continue;
 
-        if (!ctx->ass_workaround) {
+        if (!ctx->ass_single_rect) {
             int x = region->x;
             int y = region->y;
             av_bprint_clear(&buf);
@@ -699,10 +708,10 @@ static int aribcaption_trans_ass_subtitle(ARIBCaptionContext *ctx)
             else
                 ff_ass_bprint_text_event(&buf, ch->u8str, strlen(ch->u8str), "", 0);
         }
-        av_bprintf(&buf, "{\\r}%s",
-                         (i + 1 < ctx->caption.region_count) ? "\\N" : "");
+        if (ctx->ass_single_rect && (i + 1 < ctx->caption.region_count))
+            av_bprintf(&buf, "{\\r}\\N");
 
-        if (ctx->ass_workaround) {
+        if (ctx->ass_single_rect) {
             ff_dlog(ctx, "ASS subtitle%s (%d,%d) %dx%d [%d]\n",
                     (region->is_ruby) ? " (ruby)" : "",
                     region->x, region->y, region->width, region->height,
@@ -723,7 +732,7 @@ static int aribcaption_trans_ass_subtitle(ARIBCaptionContext *ctx)
             rect_idx++;
         }
     }
-    if (ctx->ass_workaround) {
+    if (ctx->ass_single_rect) {
         if (!av_bprint_is_complete(&buf)) {
             ret = AVERROR(ENOMEM);
             goto fail;
@@ -912,8 +921,7 @@ static int aribcaption_close(AVCodecContext *avctx)
 
     aribcaption_flush(avctx);
 
-    if (ctx->clut)
-        av_freep(&ctx->clut);
+    av_freep(&ctx->clut);
     if (ctx->renderer) {
         aribcc_renderer_free(ctx->renderer);
         ctx->renderer = NULL;
@@ -934,7 +942,6 @@ static int aribcaption_init(AVCodecContext *avctx)
 {
     ARIBCaptionContext *ctx = avctx->priv_data;
     aribcc_profile_t profile;
-    aribcc_encoding_scheme_t encode_scheme;
     int ret = 0;
 
     ctx->avctx = avctx;
@@ -966,32 +973,32 @@ static int aribcaption_init(AVCodecContext *avctx)
     if (ctx->force_stroke_text || ctx->ignore_background)
         ctx->charstyle |= ARIBCC_CHARSTYLE_STROKE;
 
-    encode_scheme = ARIBCC_ENCODING_SCHEME_AUTO;
-    if (avctx->sub_charenc_mode == FF_SUB_CHARENC_MODE_DO_NOTHING)
-        encode_scheme = ARIBCC_ENCODING_SCHEME_ARIB_STD_B24_UTF8;
-
     if (!(ctx->context = aribcc_context_alloc())) {
         av_log(avctx, AV_LOG_ERROR, "Failed to alloc libaribcaption context.\n");
-        aribcaption_close(avctx);
         return AVERROR_EXTERNAL;
     }
     aribcc_context_set_logcat_callback(ctx->context, logcat_callback, avctx);
     if (!(ctx->decoder = aribcc_decoder_alloc(ctx->context))) {
         av_log(avctx, AV_LOG_ERROR, "Failed to alloc libaribcaption decoder.\n");
-        aribcaption_close(avctx);
         return AVERROR_EXTERNAL;
     }
     if (!aribcc_decoder_initialize(ctx->decoder,
-                                   encode_scheme,
+                                   ctx->encoding_scheme,
                                    ARIBCC_CAPTIONTYPE_CAPTION,
                                    profile,
                                    ARIBCC_LANGUAGEID_FIRST)) {
         av_log(avctx, AV_LOG_ERROR, "Failed to initialize libaribcaption decoder.\n");
-        aribcaption_close(avctx);
         return AVERROR_EXTERNAL;
     }
     aribcc_decoder_set_replace_msz_fullwidth_ascii(ctx->decoder,
                                                    ctx->replace_fullwidth_ascii);
+
+    /* Similar behavior as ffmpeg tool to set canvas size */
+    if (ctx->canvas_width > 0 && ctx->canvas_height > 0 &&
+        (ctx->avctx->width == 0 || ctx->avctx->height == 0)) {
+        ctx->avctx->width = ctx->canvas_width;
+        ctx->avctx->height = ctx->canvas_height;
+    }
 
     switch (ctx->subtitle_type) {
     case SUBTITLE_ASS:
@@ -999,7 +1006,6 @@ static int aribcaption_init(AVCodecContext *avctx)
         if (ret != 0) {
             av_log(avctx, AV_LOG_ERROR, "Failed to set ASS header: %s\n",
                                         av_err2str(ret));
-            aribcaption_close(avctx);
             return ret;
         }
         break;
@@ -1007,7 +1013,6 @@ static int aribcaption_init(AVCodecContext *avctx)
     case SUBTITLE_BITMAP:
         if(!(ctx->renderer = aribcc_renderer_alloc(ctx->context))) {
             av_log(avctx, AV_LOG_ERROR, "Failed to alloc libaribcaption renderer.\n");
-            aribcaption_close(avctx);
             return AVERROR_EXTERNAL;
         }
         if(!aribcc_renderer_initialize(ctx->renderer,
@@ -1015,7 +1020,6 @@ static int aribcaption_init(AVCodecContext *avctx)
                                        ARIBCC_FONTPROVIDER_TYPE_AUTO,
                                        ARIBCC_TEXTRENDERER_TYPE_AUTO)) {
             av_log(avctx, AV_LOG_ERROR, "Failed to initialize libaribcaption renderer.\n");
-            aribcaption_close(avctx);
             return AVERROR_EXTERNAL;
         }
         estimate_video_frame_size(ctx);
@@ -1023,13 +1027,16 @@ static int aribcaption_init(AVCodecContext *avctx)
                                             ctx->frame_width, ctx->frame_height)) {
             av_log(ctx, AV_LOG_ERROR,
                    "aribcc_renderer_set_frame_size() returned with error.\n");
-            aribcaption_close(avctx);
             return AVERROR_EXTERNAL;
         }
-        if (!(ctx->clut = av_mallocz(AVPALETTE_SIZE))) {
-            aribcaption_close(avctx);
+        ff_dlog(ctx, "canvas: %dx%d  plane: %dx%d  bitmap: %dx%d  frame: %dx%d\n",
+                ctx->canvas_width, ctx->canvas_height,
+                ctx->plane_width, ctx->plane_height,
+                ctx->bitmap_plane_width, ctx->bitmap_plane_height,
+                ctx->frame_width, ctx->frame_height);
+
+        if (!(ctx->clut = av_mallocz(AVPALETTE_SIZE)))
             return AVERROR(ENOMEM);
-        }
 
         aribcc_renderer_set_storage_policy(ctx->renderer, ARIBCC_CAPTION_STORAGE_POLICY_MINIMUM, 0);
         aribcc_renderer_set_replace_drcs(ctx->renderer, ctx->replace_drcs);
@@ -1043,16 +1050,18 @@ static int aribcaption_init(AVCodecContext *avctx)
             const char **font_families = NULL;
             const char *fonts = ctx->font;
 
-            while (!is_nomem && *fonts) {
+            while (*fonts) {
                 const char **ff = av_realloc_array(font_families, count + 1, sizeof(*font_families));
-                if (!ff)
+                if (!ff) {
                     is_nomem = 1;
-                else {
+                    break;
+                } else {
                     font_families = ff;
                     ff[count++] = av_get_token(&fonts, ",");
-                    if (!ff[count - 1])
+                    if (!ff[count - 1]) {
                         is_nomem = 1;
-                    else if (*fonts)
+                        break;
+                    } else if (*fonts)
                         fonts++;
                 }
             }
@@ -1061,10 +1070,8 @@ static int aribcaption_init(AVCodecContext *avctx)
             while (count)
                 av_freep(&font_families[--count]);
             av_freep(&font_families);
-            if (is_nomem) {
-                aribcaption_close(avctx);
+            if (is_nomem)
                 return AVERROR(ENOMEM);
-            }
         }
         break;
 
@@ -1079,11 +1086,8 @@ static int aribcaption_init(AVCodecContext *avctx)
     return 0;
 }
 
-#if !defined(DEFAULT_SUBTITLE_TYPE)
-# define DEFAULT_SUBTITLE_TYPE SUBTITLE_ASS
-#endif
-#if !defined(ASS_WORKAROUND)
-# define ASS_WORKAROUND 1
+#if !defined(ASS_SINGLE_RECT)
+# define ASS_SINGLE_RECT 0
 #endif
 
 #define OFFSET(x) offsetof(ARIBCaptionContext, x)
@@ -1091,7 +1095,7 @@ static int aribcaption_init(AVCodecContext *avctx)
 static const AVOption options[] = {
     { "sub_type", "subtitle rendering type",
       OFFSET(subtitle_type), AV_OPT_TYPE_INT,
-      { .i64 = DEFAULT_SUBTITLE_TYPE }, SUBTITLE_NONE, SUBTITLE_ASS, SD, "type" },
+      { .i64 = SUBTITLE_ASS }, SUBTITLE_NONE, SUBTITLE_ASS, SD, "type" },
     { "none",   "do nothing", 0, AV_OPT_TYPE_CONST,
       { .i64 = SUBTITLE_NONE }, .flags = SD, .unit = "type" },
     { "bitmap", "bitmap rendering", 0, AV_OPT_TYPE_CONST,
@@ -1100,8 +1104,19 @@ static const AVOption options[] = {
       { .i64 = SUBTITLE_TEXT }, .flags = SD, .unit = "type" },
     { "ass",    "formatted text", 0, AV_OPT_TYPE_CONST,
       { .i64 = SUBTITLE_ASS }, .flags = SD, .unit = "type" },
-    { "ass_workaround", "workaround of ASS subtitle for players which can't handle multi-rectangle (e.g., MPV) [ass]",
-      OFFSET(ass_workaround), AV_OPT_TYPE_BOOL, { .i64 = ASS_WORKAROUND }, 0, 1, SD },
+    { "caption_encoding", "encoding scheme of subtitle text",
+      OFFSET(encoding_scheme), AV_OPT_TYPE_INT, { .i64 = ARIBCC_ENCODING_SCHEME_AUTO },
+      ARIBCC_ENCODING_SCHEME_AUTO, ARIBCC_ENCODING_SCHEME_ABNT_NBR_15606_1_LATIN, SD, "encoding" },
+    { "auto",   "automatically detect encoding scheme", 0, AV_OPT_TYPE_CONST,
+      { .i64 = ARIBCC_ENCODING_SCHEME_AUTO }, .flags = SD, .unit = "encoding" },
+    { "jis",    "8bit-char JIS encoding (Japanese ISDB captions)", 0, AV_OPT_TYPE_CONST,
+      { .i64 = ARIBCC_ENCODING_SCHEME_ARIB_STD_B24_JIS }, .flags = SD, .unit = "encoding" },
+    { "utf8",   "UTF-8 encoding (Philippines ISDB-T captions)", 0, AV_OPT_TYPE_CONST,
+      { .i64 = ARIBCC_ENCODING_SCHEME_ARIB_STD_B24_UTF8 }, .flags = SD, .unit = "encoding" },
+    { "latin",  "latin characters (SBTVD / ISDB-Tb captions used in South America)", 0, AV_OPT_TYPE_CONST,
+      { .i64 = ARIBCC_ENCODING_SCHEME_ABNT_NBR_15606_1_LATIN }, .flags = SD, .unit = "encoding" },
+    { "ass_single_rect", "workaround of ASS subtitle for players which can't handle multi-rectangle [ass]",
+      OFFSET(ass_single_rect), AV_OPT_TYPE_BOOL, { .i64 = ASS_SINGLE_RECT }, 0, 1, SD },
     { "font", "comma-separated font family [ass, bitmap]",
       OFFSET(font), AV_OPT_TYPE_STRING, { .str = NULL }, 0, 0, SD },
     { "replace_fullwidth_ascii", "replace MSZ fullwidth alphanumerics with halfwidth alphanumerics [ass, bitmap]",
@@ -1116,6 +1131,8 @@ static const AVOption options[] = {
       OFFSET(stroke_width), AV_OPT_TYPE_FLOAT, { .dbl = 1.5 }, 0.0, 3.0, SD },
     { "replace_drcs", "replace known DRCS [bitmap]",
       OFFSET(replace_drcs), AV_OPT_TYPE_BOOL, { .i64 = 1 }, 0, 1, SD },
+    {"canvas_size", "set input video size (WxH or abbreviation) [bitmap]",
+      OFFSET(canvas_width), AV_OPT_TYPE_IMAGE_SIZE, { .str = NULL }, 0, INT_MAX, SD },
     { NULL }
 };
 
@@ -1127,15 +1144,15 @@ static const AVClass aribcaption_class = {
 };
 
 const FFCodec ff_aribcaption_decoder = {
-    .p.name      = "aribcaption",
-    .p.long_name = NULL_IF_CONFIG_SMALL("ARIB STD-B24 caption decoder"),
-    .p.type      = AVMEDIA_TYPE_SUBTITLE,
-    .p.id        = AV_CODEC_ID_ARIB_CAPTION,
+    .p.name         = "aribcaption",
+    .p.long_name    = NULL_IF_CONFIG_SMALL("ARIB STD-B24 caption decoder"),
+    .p.type         = AVMEDIA_TYPE_SUBTITLE,
+    .p.id           = AV_CODEC_ID_ARIB_CAPTION,
     .priv_data_size = sizeof(ARIBCaptionContext),
-    .init      = aribcaption_init,
-    .close     = aribcaption_close,
+    .init           = aribcaption_init,
+    .close          = aribcaption_close,
     FF_CODEC_DECODE_SUB_CB(aribcaption_decode),
-    .flush     = aribcaption_flush,
-    .p.priv_class= &aribcaption_class,
-    .caps_internal = FF_CODEC_CAP_INIT_THREADSAFE,
+    .flush          = aribcaption_flush,
+    .p.priv_class   = &aribcaption_class,
+    .caps_internal  = FF_CODEC_CAP_INIT_CLEANUP,
 };

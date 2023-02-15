@@ -386,6 +386,26 @@ Simple text based output without formatting.
 The default is @dfn{ass} as same as @dfn{libaribb24} decoder.
 Some present players (e.g., @dfn{mpv}) expect ASS format for ARIB caption.
 
+@item -caption_encoding @var{encoding_scheme}
+Specifies the encoding scheme of input subtitle text.
+
+@table @samp
+@item auto
+Automatically detect text encoding.
+@item jis
+8bit-char JIS encoding defined in ARIB STD B24.
+This encoding used in Japan for ISDB captions.
+@item utf8
+UTF-8 encoding defined in ARIB STD B24.
+This encoding is used in Philippines for ISDB-T captions.
+@item latin
+Latin character encoding defined in ABNT NBR 15606-1.
+This encoding is used in South America for SBTVD / ISDB-Tb captions.
+@end table
+
+The default is @dfn{ass} as same as @dfn{libaribb24} decoder.
+Some present players (e.g., @dfn{mpv}) expect ASS format for ARIB caption.
+
 @item -font @var{font_name[,font_name2,...]}
 Specify comma-separated list of font family names to be used for @dfn{bitmap}
 or @dfn{ass} type subtitle rendering.
@@ -393,18 +413,18 @@ Only first font name is used for @dfn{ass} type subtitle.
 
 If not specified, use internaly defined default font family.
 
-@item -ass_workaround @var{boolean}
-Since some players (e.g., @dfn{mpv}) can't handle multi-rectangle ASS
-subtitle properly, default behavior is all the texts are displayed in
-a single-rectangle at a time.
-It causes some texts may not be displayed at expected position as described
-in ARIB STD-B24.
+@item -ass_single_rect @var{boolean}
+ARIB STD-B24 specifies that some captions may be displayed at different
+positions at a time (multi-rectangle subtitle).
+Since some players (e.g., old @dfn{mpv}) can't handle multi-rectangle ASS
+subtitle properly, this option can change the behavior so that all the texts
+are displayed in a single-rectangle.
 
-The default is @var{true}.
+The default is @var{false}.
 
-If a player can handle multi-rectangle ASS subtitle and you prefer
-more suitable positioning, set this option to @var{false} or define
-@env{ASS_WORKAROUND=0} to change default behavior at compilation.
+If your player cannot handle multi-rectangle ASS subtitle properly,
+set this option to @var{true} or define @env{ASS_SINGLE_RECT=1} to change
+default behavior at compilation.
 
 @item -replace_fullwidth_ascii @var{boolean}
 Specify whether to replace MSZ (Middle Size, half width) fullwidth
@@ -437,6 +457,9 @@ The default is @var{false}.
 Specify whether to render replaced DRCS characters as Unicode characters.
 
 The default is @var{true}.
+
+@item -canvas_size @var{image_size}
+Specify input video size to determine size of canvas to render subtitle.
 
 @end table
 
