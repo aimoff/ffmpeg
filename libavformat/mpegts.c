@@ -32,6 +32,7 @@
 #include "libavutil/opt.h"
 #include "libavutil/avassert.h"
 #include "libavutil/dovi_meta.h"
+#include "libavcodec/avcodec.h"
 #include "libavcodec/bytestream.h"
 #include "libavcodec/get_bits.h"
 #include "libavcodec/opus.h"
@@ -2174,8 +2175,12 @@ int ff_parse_mpeg2_descriptor(AVFormatContext *fc, AVStream *st, int stream_type
 
             st->codecpar->codec_type = AVMEDIA_TYPE_SUBTITLE;
             st->codecpar->codec_id   = AV_CODEC_ID_ARIB_CAPTION;
-            st->codecpar->profile    = picked_profile;
+            if (st->codecpar->profile != picked_profile) {
+                st->codecpar->profile = picked_profile;
+                sti->need_context_update = 1;
+            }
             sti->request_probe = 0;
+            sti->need_parsing = 0;
         }
         break;
     case 0xb0: /* DOVI video stream descriptor */
