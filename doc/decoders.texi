@@ -461,6 +461,26 @@ The default is @var{true}.
 @item -canvas_size @var{image_size}
 Specify input video size to determine size of canvas to render subtitle.
 
+The aribcaption decoder assumes input frame size for bitmap rendering as bellow:
+@enumerate
+@item
+PROFILE_A : 1440 x 1080 with SAR 4:3
+@item
+PROFILE_C : 320 x 180 with SAR 1:1
+@end enumerate
+
+If actual frame aspect ratio (FAR) of input video does not match above assumption,
+the rendered captions may be distorted.
+To make the captions undistorted, add @code{-canvas_size} option to specify
+actual input video size.
+
+Note that the @code{-canvas_size} option is not required for video with
+different size but same aspect ratio.
+In such cases, the caption will be stretched or shrunk to actual video size
+if @code{-canvas_size} option is not specified.
+If @code{-canvas_size} option is specified with different size,
+the caption will be stretched or shrunk as specified size with calcurated SAR.
+
 @end table
 
 @subsection aribcaption decoder usage examples
@@ -468,6 +488,11 @@ Specify input video size to determine size of canvas to render subtitle.
 Display MPEG-TS file with ARIB subtitle by @dfn{ffplay} tool:
 @example
 ffplay -sub_type bitmap MPEG.TS
+@end example
+
+Display MPEG-TS file with input frame size 1920x1080 by @dfn{ffplay} tool:
+@example
+ffplay -sub_type bitmap -canvas_size 1920x1080 MPEG.TS
 @end example
 
 Embed ARIB subtitle in transcoded video:

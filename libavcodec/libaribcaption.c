@@ -149,7 +149,6 @@ static void estimate_video_frame_size(ARIBCaptionContext *ctx)
         ctx->bitmap_plane_width = ctx->plane_width;
         ctx->bitmap_plane_height = ctx->plane_height;
     }
-
     /* Expand either width or height */
     if (ctx->bitmap_plane_height * ctx->plane_width > ctx->bitmap_plane_width * ctx->plane_height) {
         ctx->frame_height = ctx->bitmap_plane_height;
@@ -326,17 +325,17 @@ static int aribcaption_trans_bitmap_subtitle(ARIBCaptionContext *ctx)
     }
     estimate_video_frame_size(ctx);
     if (ctx->frame_width != old_width || ctx->frame_height != old_height) {
+        ff_dlog(ctx, "canvas: %dx%d  plane: %dx%d  bitmap: %dx%d  frame: %dx%d\n",
+                ctx->avctx->width, ctx->avctx->height,
+                ctx->plane_width, ctx->plane_height,
+                ctx->bitmap_plane_width, ctx->bitmap_plane_height,
+                ctx->frame_width, ctx->frame_height);
         if (!aribcc_renderer_set_frame_size(ctx->renderer,
                                  ctx->frame_width, ctx->frame_height)) {
             av_log(ctx, AV_LOG_ERROR,
                    "aribcc_renderer_set_frame_size() returned with error.\n");
             return AVERROR_EXTERNAL;
         }
-        ff_dlog(ctx, "canvas: %dx%d  plane: %dx%d  bitmap: %dx%d  frame: %dx%d\n",
-                ctx->canvas_width, ctx->canvas_height,
-                ctx->plane_width, ctx->plane_height,
-                ctx->bitmap_plane_width, ctx->bitmap_plane_height,
-                ctx->frame_width, ctx->frame_height);
     }
 
     status = aribcc_renderer_append_caption(ctx->renderer, &ctx->caption);
@@ -574,6 +573,7 @@ static int aribcaption_trans_ass_subtitle(ARIBCaptionContext *ctx)
 {
     AVSubtitle *sub = ctx->sub;
     AVBPrint buf;
+    bool single_rect = ctx->ass_single_rect;
     int ret = 0, rect_idx;
 
     if (ctx->caption.plane_width > 0 && ctx->caption.plane_height > 0 &&
@@ -584,6 +584,8 @@ static int aribcaption_trans_ass_subtitle(ARIBCaptionContext *ctx)
         if ((ret = set_ass_header(ctx)) < 0)
             return ret;
     }
+    if (ctx->avctx->profile == FF_PROFILE_ARIB_PROFILE_C)
+        single_rect = true;
 
     sub->format = 1; /* text */
     if (ctx->caption.region_count == 0) {
@@ -594,15 +596,17 @@ static int aribcaption_trans_ass_subtitle(ARIBCaptionContext *ctx)
 
     av_bprint_init(&buf, ARIBC_BPRINT_SIZE_INIT, ARIBC_BPRINT_SIZE_MAX);
 
-    if (ctx->ass_single_rect) {
-        int x, y;
+    if (single_rect) {
+        int x, y, rx, ry;
         x = ctx->plane_width;
         y = ctx->plane_height;
         for (int i = 0; i < ctx->caption.region_count; i++) {
-            if (ctx->caption.regions[i].x < x)
-                x = ctx->caption.regions[i].x;
-            if (ctx->caption.regions[i].y < y)
-                y = ctx->caption.regions[i].y;
+            rx = ctx->caption.regions[i].x;
+            ry = ctx->caption.regions[i].y;
+            if (rx < x)
+                x = rx;
+            if (ry < y)
+                y = ry;
         }
         av_bprintf(&buf, "{\\an7}");
         if (x > 0 || y >0)
@@ -626,9 +630,13 @@ static int aribcaption_trans_ass_subtitle(ARIBCaptionContext *ctx)
         if (region->is_ruby && ctx->ignore_ruby)
             continue;
 
-        if (!ctx->ass_single_rect) {
+        if (!single_rect) {
             int x = region->x;
             int y = region->y;
+            if (x < 0)
+                x += ctx->plane_width;
+            if (y < 0)
+                y += ctx->plane_height;
             av_bprint_clear(&buf);
             av_bprintf(&buf, "{\\an7}");
             if (x != 0 || y != 0)
@@ -708,10 +716,10 @@ static int aribcaption_trans_ass_subtitle(ARIBCaptionContext *ctx)
             else
                 ff_ass_bprint_text_event(&buf, ch->u8str, strlen(ch->u8str), "", 0);
         }
-        if (ctx->ass_single_rect && (i + 1 < ctx->caption.region_count))
-            av_bprintf(&buf, "{\\r}\\N");
 
-        if (ctx->ass_single_rect) {
+        if (single_rect) {
+            if (i + 1 < ctx->caption.region_count)
+                av_bprintf(&buf, "{\\r}\\N");
             ff_dlog(ctx, "ASS subtitle%s (%d,%d) %dx%d [%d]\n",
                     (region->is_ruby) ? " (ruby)" : "",
                     region->x, region->y, region->width, region->height,
@@ -732,7 +740,7 @@ static int aribcaption_trans_ass_subtitle(ARIBCaptionContext *ctx)
             rect_idx++;
         }
     }
-    if (ctx->ass_single_rect) {
+    if (single_rect) {
         if (!av_bprint_is_complete(&buf)) {
             ret = AVERROR(ENOMEM);
             goto fail;
@@ -1023,17 +1031,17 @@ static int aribcaption_init(AVCodecContext *avctx)
             return AVERROR_EXTERNAL;
         }
         estimate_video_frame_size(ctx);
+        ff_dlog(ctx, "canvas: %dx%d  plane: %dx%d  bitmap: %dx%d  frame: %dx%d\n",
+                ctx->avctx->width, ctx->avctx->height,
+                ctx->plane_width, ctx->plane_height,
+                ctx->bitmap_plane_width, ctx->bitmap_plane_height,
+                ctx->frame_width, ctx->frame_height);
         if (!aribcc_renderer_set_frame_size(ctx->renderer,
                                             ctx->frame_width, ctx->frame_height)) {
             av_log(ctx, AV_LOG_ERROR,
                    "aribcc_renderer_set_frame_size() returned with error.\n");
             return AVERROR_EXTERNAL;
         }
-        ff_dlog(ctx, "canvas: %dx%d  plane: %dx%d  bitmap: %dx%d  frame: %dx%d\n",
-                ctx->canvas_width, ctx->canvas_height,
-                ctx->plane_width, ctx->plane_height,
-                ctx->bitmap_plane_width, ctx->bitmap_plane_height,
-                ctx->frame_width, ctx->frame_height);
 
         if (!(ctx->clut = av_mallocz(AVPALETTE_SIZE)))
             return AVERROR(ENOMEM);
