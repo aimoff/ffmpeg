@@ -606,7 +606,7 @@ static int aribcaption_trans_ass_subtitle(ARIBCaptionContext *ctx)
 
     av_bprint_init(&buf, ARIBC_BPRINT_SIZE_INIT, ARIBC_BPRINT_SIZE_MAX);
 
-    if (single_rect) {
+    if (single_rect && ctx->avctx->profile != FF_PROFILE_ARIB_PROFILE_C) {
         int x, y, rx, ry;
         x = ctx->plane_width;
         y = ctx->plane_height;
@@ -618,13 +618,11 @@ static int aribcaption_trans_ass_subtitle(ARIBCaptionContext *ctx)
             if (ry < y)
                 y = ry;
         }
-        if (ctx->avctx->profile != FF_PROFILE_ARIB_PROFILE_C) {
-            av_bprintf(&buf, "{\\an7}");
-            if (y < 0)
-                y += ctx->plane_height;
-            if (x > 0 || y > 0)
-                av_bprintf(&buf, "{\\pos(%d,%d)}", x, y);
-        }
+        av_bprintf(&buf, "{\\an7}");
+        if (y < 0)
+            y += ctx->plane_height;
+        if (x > 0 || y > 0)
+            av_bprintf(&buf, "{\\pos(%d,%d)}", x, y);
     }
 
     rect_idx = 0;
