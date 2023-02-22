@@ -452,8 +452,15 @@ static int aribcaption_trans_bitmap_subtitle(ARIBCaptionContext *ctx)
             goto fail;
         }
 
-        rect->x = image->dst_x * ctx->bitmap_plane_width / ctx->frame_width;
-        rect->y = image->dst_y * ctx->bitmap_plane_height / ctx->frame_height;
+        if (ctx->avctx->profile == FF_PROFILE_ARIB_PROFILE_C) {
+            /* ARIB TR-B14 version 3.8 Fascicle 1-(2/2) Volume 3 [Section 4] */
+            /* No position information is provided for profile C */
+            rect->x = (ctx->frame_width - rect->w) / 2;
+            rect->y = ctx->frame_height - rect->h * (ctx->caption.region_count - rect_idx);
+        } else {
+            rect->x = image->dst_x * ctx->bitmap_plane_width / ctx->frame_width;
+            rect->y = image->dst_y * ctx->bitmap_plane_height / ctx->frame_height;
+        }
         rect->type = SUBTITLE_BITMAP;
         rect->linesize[0] = rect->w;
         rect->nb_colors = 256;
@@ -584,6 +591,9 @@ static int aribcaption_trans_ass_subtitle(ARIBCaptionContext *ctx)
         if ((ret = set_ass_header(ctx)) < 0)
             return ret;
     }
+
+    /* ARIB TR-B14 version 3.8 Fascicle 1-(2/2) Volume 3 [Section 4] */
+    /* No position information is provided for profile C */
     if (ctx->avctx->profile == FF_PROFILE_ARIB_PROFILE_C)
         single_rect = true;
 
@@ -799,9 +809,9 @@ static int aribcaption_trans_text_subtitle(ARIBCaptionContext *ctx)
     }
     rect = sub->rects[0];
 
-    if (ctx->caption.region_count == 0) {
+    if (ctx->caption.region_count == 0)
         text = ""; /* clear previous caption */
-    } else {
+    else {
         text = ctx->caption.text;
         ff_dlog(ctx, "TEXT subtitle: %s\n", text);
     }
