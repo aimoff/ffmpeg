@@ -930,11 +930,12 @@ static void aribcaption_flush(AVCodecContext *avctx)
 {
     ARIBCaptionContext *ctx = avctx->priv_data;
 
-    if (!(avctx->flags2 & AV_CODEC_FLAG2_RO_FLUSH_NOOP) && ctx->decoder)
+    if (ctx->decoder)
         aribcc_decoder_flush(ctx->decoder);
     if (ctx->renderer)
         aribcc_renderer_flush(ctx->renderer);
-    ctx->readorder = 0;
+    if (!(avctx->flags2 & AV_CODEC_FLAG2_RO_FLUSH_NOOP))
+        ctx->readorder = 0;
 }
 
 static int aribcaption_close(AVCodecContext *avctx)
