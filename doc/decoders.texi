@@ -416,13 +416,14 @@ If not specified, use internaly defined default font family.
 @item -ass_single_rect @var{boolean}
 ARIB STD-B24 specifies that some captions may be displayed at different
 positions at a time (multi-rectangle subtitle).
-Since some players (e.g., old @dfn{mpv}) can't handle multi-rectangle ASS
-subtitle properly, this option can change the behavior so that all the texts
-are displayed in a single-rectangle.
+Since some players (e.g., old @dfn{mpv}) can't handle multiple ASS rectangles
+in a single AVSubtitle, or multiple ASS rectangles of indeterminate duration
+with the same start timestamp, this option can change the behavior so that
+all the texts are displayed in a single ASS rectangle.
 
 The default is @var{false}.
 
-If your player cannot handle multi-rectangle ASS subtitle properly,
+If your player cannot handle AVSubtitles with multiple ASS rectangles properly,
 set this option to @var{true} or define @env{ASS_SINGLE_RECT=1} to change
 default behavior at compilation.
 
@@ -460,8 +461,9 @@ The default is @var{true}.
 
 @item -canvas_size @var{image_size}
 Specify input video size to determine size of canvas to render subtitle.
+This only applies when @code{-subtitle_type} is set to @var{bitmap}.
 
-The aribcaption decoder assumes input frame size for bitmap rendering as bellow:
+The aribcaption decoder assumes input frame size for bitmap rendering as below:
 @enumerate
 @item
 PROFILE_A : 1440 x 1080 with SAR 4:3
@@ -479,7 +481,7 @@ different size but same aspect ratio.
 In such cases, the caption will be stretched or shrunk to actual video size
 if @code{-canvas_size} option is not specified.
 If @code{-canvas_size} option is specified with different size,
-the caption will be stretched or shrunk as specified size with calcurated SAR.
+the caption will be stretched or shrunk as specified size with calculated SAR.
 
 @end table
 

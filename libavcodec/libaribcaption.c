@@ -66,8 +66,8 @@ typedef struct ARIBCaptionContext {
     aribcc_decoder_t *decoder;
     aribcc_renderer_t *renderer;
 
-    enum AVSubtitleType subtitle_type;
-    enum aribcc_encoding_scheme_t encoding_scheme;
+    int subtitle_type;
+    int encoding_scheme;
     bool ass_single_rect;
     char *font;
     bool replace_fullwidth_ascii;
@@ -608,9 +608,13 @@ static int aribcaption_trans_ass_subtitle(ARIBCaptionContext *ctx)
             if (ry < y)
                 y = ry;
         }
-        av_bprintf(&buf, "{\\an7}");
-        if (x > 0 || y >0)
-            av_bprintf(&buf, "{\\pos(%d,%d)}", x, y);
+        if (ctx->avctx->profile != FF_PROFILE_ARIB_PROFILE_C) {
+            av_bprintf(&buf, "{\\an7}");
+            if (y < 0)
+                y += ctx->plane_height;
+            if (x > 0 || y > 0)
+                av_bprintf(&buf, "{\\pos(%d,%d)}", x, y);
+        }
     }
 
     rect_idx = 0;
@@ -639,7 +643,7 @@ static int aribcaption_trans_ass_subtitle(ARIBCaptionContext *ctx)
                 y += ctx->plane_height;
             av_bprint_clear(&buf);
             av_bprintf(&buf, "{\\an7}");
-            if (x != 0 || y != 0)
+            if (x > 0 || y > 0)
                 av_bprintf(&buf, "{\\pos(%d,%d)}", x, y);
         }
         if (region->is_ruby)
@@ -648,21 +652,23 @@ static int aribcaption_trans_ass_subtitle(ARIBCaptionContext *ctx)
         for (int j = 0; j < region->char_count; j++) {
             aribcc_caption_char_t *ch = &region->chars[j];
 
-            if (ch->char_horizontal_spacing != char_horizontal_spacing) {
-                av_bprintf(&buf, "{\\fsp%d}", (region->is_ruby) ?
-                                 ch->char_horizontal_spacing / 2 :
-                                 ch->char_horizontal_spacing);
-                char_horizontal_spacing = ch->char_horizontal_spacing;
-            }
-            if (ch->char_width != char_width) {
-                av_bprintf(&buf, "{\\fscx%"PRId64"}",
-                           av_rescale(ch->char_width, 100, ctx->font_size));
-                char_width = ch->char_width;
-            }
-            if (ch->char_height != char_height) {
-                av_bprintf(&buf, "{\\fscy%"PRId64"}",
-                           av_rescale(ch->char_height, 100, ctx->font_size));
-                char_height = ch->char_height;
+            if (ctx->avctx->profile != FF_PROFILE_ARIB_PROFILE_C) {
+                if (ch->char_horizontal_spacing != char_horizontal_spacing) {
+                    av_bprintf(&buf, "{\\fsp%d}", (region->is_ruby) ?
+                                     ch->char_horizontal_spacing / 2 :
+                                     ch->char_horizontal_spacing);
+                    char_horizontal_spacing = ch->char_horizontal_spacing;
+                }
+                if (ch->char_width != char_width) {
+                    av_bprintf(&buf, "{\\fscx%"PRId64"}",
+                               av_rescale(ch->char_width, 100, ctx->font_size));
+                    char_width = ch->char_width;
+                }
+                if (ch->char_height != char_height) {
+                    av_bprintf(&buf, "{\\fscy%"PRId64"}",
+                               av_rescale(ch->char_height, 100, ctx->font_size));
+                    char_height = ch->char_height;
+                }
             }
             if (ch->style != charstyle) {
                 aribcc_charstyle_t diff = ch->style ^ charstyle;
@@ -871,7 +877,7 @@ static int aribcaption_decode(AVCodecContext *avctx, AVSubtitle *sub,
                       0 : ctx->caption.wait_duration % 1000));
     }
 
-    switch (ctx->subtitle_type) {
+    switch ((enum AVSubtitleType) ctx->subtitle_type) {
     case SUBTITLE_TEXT:
         status = aribcaption_trans_text_subtitle(ctx);
         break;
@@ -914,34 +920,24 @@ static void aribcaption_flush(AVCodecContext *avctx)
 {
     ARIBCaptionContext *ctx = avctx->priv_data;
 
-    if (!(avctx->flags2 & AV_CODEC_FLAG2_RO_FLUSH_NOOP)) {
-        if (ctx->decoder)
-            aribcc_decoder_flush(ctx->decoder);
-        if (ctx->renderer)
-            aribcc_renderer_flush(ctx->renderer);
-        ctx->readorder = 0;
-    }
+    if (!(avctx->flags2 & AV_CODEC_FLAG2_RO_FLUSH_NOOP) && ctx->decoder)
+        aribcc_decoder_flush(ctx->decoder);
+    if (ctx->renderer)
+        aribcc_renderer_flush(ctx->renderer);
+    ctx->readorder = 0;
 }
 
 static int aribcaption_close(AVCodecContext *avctx)
 {
     ARIBCaptionContext *ctx = avctx->priv_data;
 
-    aribcaption_flush(avctx);
-
     av_freep(&ctx->clut);
-    if (ctx->renderer) {
+    if (ctx->renderer)
         aribcc_renderer_free(ctx->renderer);
-        ctx->renderer = NULL;
-    }
-    if (ctx->decoder) {
+    if (ctx->decoder)
         aribcc_decoder_free(ctx->decoder);
-        ctx->decoder = NULL;
-    }
-    if (ctx->context) {
+    if (ctx->context)
         aribcc_context_free(ctx->context);
-        ctx->context = NULL;
-     }
 
     return 0;
 }
@@ -991,7 +987,7 @@ static int aribcaption_init(AVCodecContext *avctx)
         return AVERROR_EXTERNAL;
     }
     if (!aribcc_decoder_initialize(ctx->decoder,
-                                   ctx->encoding_scheme,
+                                   (enum aribcc_encoding_scheme_t) ctx->encoding_scheme,
                                    ARIBCC_CAPTIONTYPE_CAPTION,
                                    profile,
                                    ARIBCC_LANGUAGEID_FIRST)) {
@@ -1008,7 +1004,7 @@ static int aribcaption_init(AVCodecContext *avctx)
         ctx->avctx->height = ctx->canvas_height;
     }
 
-    switch (ctx->subtitle_type) {
+    switch ((enum AVSubtitleType) ctx->subtitle_type) {
     case SUBTITLE_ASS:
         ret = set_ass_header(ctx);
         if (ret != 0) {
