@@ -181,7 +181,6 @@ version 6.0.1:
  avcodec/aacps_tablegen: fix build error after avutil bump
  avcodec/nvenc: fix potential NULL pointer dereference
 
-
 version 6.0:
 - Radiance HDR image support
 - ddagrab (Desktop Duplication) video capture filter
