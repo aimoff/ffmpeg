@@ -1055,6 +1055,7 @@ OBJS-$(CONFIG_PCM_MULAW_AT_ENCODER)       += audiotoolboxenc.o
 OBJS-$(CONFIG_LIBAOM_AV1_DECODER)         += libaomdec.o
 OBJS-$(CONFIG_LIBAOM_AV1_ENCODER)         += libaomenc.o
 OBJS-$(CONFIG_LIBARIBB24_DECODER)         += libaribb24.o ass.o
+OBJS-$(CONFIG_ARIBCAPTION_DECODER)        += libaribcaption.o ass.o
 OBJS-$(CONFIG_LIBCELT_DECODER)            += libcelt_dec.o
 OBJS-$(CONFIG_LIBCODEC2_DECODER)          += libcodec2.o
 OBJS-$(CONFIG_LIBCODEC2_ENCODER)          += libcodec2.o
