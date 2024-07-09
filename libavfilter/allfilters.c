@@ -281,6 +281,7 @@ extern const AVFilter ff_vf_fspp;
 extern const AVFilter ff_vf_gblur;
 extern const AVFilter ff_vf_gblur_vulkan;
 extern const AVFilter ff_vf_geq;
+extern const AVFilter ff_vf_gopromax_opencl;
 extern const AVFilter ff_vf_gradfun;
 extern const AVFilter ff_vf_graphmonitor;
 extern const AVFilter ff_vf_grayworld;
