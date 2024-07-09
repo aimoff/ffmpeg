@@ -27128,6 +27128,69 @@ Apply dilation filter with threshold0 set to 30, threshold1 set 40, threshold2 s
 @end example
 @end itemize
 
+@anchor{gopromax_opencl}
+@section gopromax_opencl
+
+Apply transformation of the two GoPro Max video streams to equirectangular or equiangular-cubemap projection.
+
+This filter is designed to use directly GoPro .360 files.
+Native .360 files are sort of EAC files, in fact the front and rear lenses streams are the top and the bottom of the EAC projection.
+
+The .360 file contains two video streams.
+Most of cases, one is stream #0:0, and the other is stream #0:5.
+Please check actual stream number with @code{ffprobe} command.
+This filter combine two streams to single stream.
+
+The .360 contains also 2x64 bits of overlapped area.
+The filter blends overlapped images in these two areas.
+
+The filter accepts the following options:
+
+@table @option
+
+@item output
+Set format of the output video.
+
+Available formats:
+
+@table @samp
+
+@item e
+@item equirect
+Equirectangular projection.
+
+@item eac
+Equi-Angular Cubemap.
+
+@end table
+
+Default is @code{equirect}.
+
+@end table
+
+@subsection Example
+
+@itemize
+@item
+Convert .360 to Equirectangular projection.
+@example
+-i INPUT -filter_complex '[0:0]hwupload[a], [0:5]hwupload[b], [a][b]gopromax_opencl, hwdownload, format=yuvj420p' -map 0:a:0 -map 0:3 -c:a copy -c:u copy OUTPUT
+@end example
+
+Two video streams (#0:0 and #0:5) are combined and converted to default equirectangular projection.
+First audio stream (GoPro AAC) and stream #0:3 (GoPro MET) are copied with the video stream.
+
+@item
+Convert .360 to Equi-Angular Cubemap projection.
+@example
+-i INPUT -filter_complex '[0:0]hwupload[a], [0:5]hwupload[b], [a][b]gopromax_opencl=output=eac, hwdownload, format=yuvj420p' -map 0:1 -map 0:3 -c:a copy -c:u copy OUTPUT
+@end example
+
+Two video streams (#0:0 and #0:5) are combined and converted to equi-angular cubemap projection.
+Stream #0:1 (GoPro AAC) and stream #0:3 (GoPro MET) are copied with the video stream.
+
+@end itemize
+
 @anchor{nlmeans_opencl}
 @section nlmeans_opencl
 
