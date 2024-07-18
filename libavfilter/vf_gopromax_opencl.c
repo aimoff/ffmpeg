@@ -32,9 +32,6 @@
 #include "video.h"
 #include "v360.h"
 
-#define OVERLAP 64
-#define BASESIZE 4096
-
 typedef struct GoProMaxOpenCLContext {
     OpenCLFilterContext ocf;
 
@@ -47,6 +44,7 @@ typedef struct GoProMaxOpenCLContext {
     int              nb_planes;
 
     int              out;
+    int              overlap;
 } GoProMaxOpenCLContext;
 
 static int gopromax_opencl_load(AVFilterContext *avctx,
@@ -118,7 +116,7 @@ static int gopromax_opencl_stack(FFFrameSync *fs)
     AVFrame *input_front, *input_rear;
     AVFrame *output;
     cl_mem mem;
-    cl_int cle;
+    cl_int cle, overlap;
     size_t global_work[2];
     int kernel_arg = 0;
     int err, plane;
@@ -163,6 +161,10 @@ static int gopromax_opencl_stack(FFFrameSync *fs)
         CL_SET_KERNEL_ARG(ctx->kernel, kernel_arg, cl_mem, &mem);
         kernel_arg++;
 
+        overlap = ctx->overlap;
+        CL_SET_KERNEL_ARG(ctx->kernel, kernel_arg, cl_int, &overlap);
+        kernel_arg++;
+
         err = ff_opencl_filter_work_size_from_image(avctx, global_work,
                                                     output, plane, 0);
         if (err < 0)
@@ -199,7 +201,6 @@ static int gopromax_opencl_config_output(AVFilterLink *outlink)
     AVFilterContext *avctx = outlink->src;
     GoProMaxOpenCLContext *ctx = avctx->priv;
     int height = avctx->inputs[0]->h;
-    int width = avctx->inputs[0]->w;
     int err;
 
     switch (ctx->out) {
@@ -208,8 +209,7 @@ static int gopromax_opencl_config_output(AVFilterLink *outlink)
         ctx->ocf.output_height = 2 * height;
         break;
     case EQUIANGULAR:
-        int overlap = width * OVERLAP / BASESIZE;
-        ctx->ocf.output_width = width - overlap * 2;
+        ctx->ocf.output_width = 3 * height;
         ctx->ocf.output_height = 2 * height;
         break;
     default:
@@ -275,6 +275,7 @@ static const AVOption gopromax_opencl_options[] = {
     {        "e", "equirectangular",                  0, AV_OPT_TYPE_CONST, {.i64=EQUIRECTANGULAR}, 0,                0, FLAGS, .unit = "out" },
     { "equirect", "equirectangular",                  0, AV_OPT_TYPE_CONST, {.i64=EQUIRECTANGULAR}, 0,                0, FLAGS, .unit = "out" },
     {      "eac", "equi-angular cubemap",             0, AV_OPT_TYPE_CONST, {.i64=EQUIANGULAR},     0,                0, FLAGS, .unit = "out" },
+    {  "overlap", "set overlapped pixels", OFFSET(overlap), AV_OPT_TYPE_INT, {.i64=64},             0,              128, FLAGS, .unit = "overlap"},
     { NULL },
 };
 

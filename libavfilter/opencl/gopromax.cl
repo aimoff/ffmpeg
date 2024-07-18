@@ -19,9 +19,6 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#define OVERLAP 64
-#define BASESIZE 4096
-
 enum Faces {
     TOP_LEFT,
     TOP_MIDDLE,
@@ -184,85 +181,89 @@ const sampler_t sampler = (CLK_NORMALIZED_COORDS_FALSE |
                            CLK_ADDRESS_CLAMP_TO_EDGE   |
                            CLK_FILTER_NEAREST);
 
-static float4 gopromax_to_eac(int2 loc, image2d_t front, image2d_t rear)
+static float4 gopromax_to_eac(float2 uv, int overlap, __read_only image2d_t src)
 {
-    int2 dim = get_image_dim(front);
-    float4 val, val1, val2;
+    int2 dim = get_image_dim(src);
     int cube_size = dim.y;
-    int overlap, cut, loc_x, x, y, a;
+    int2 xy1, xy2;
+    float2 a;
+    float4 val;
 
-    overlap = dim.x * OVERLAP / BASESIZE;
-    cut = (cube_size * 3 + overlap * 2 - dim.x) / 2;
-    loc_x = loc.x;
-    y = loc.y;
-    a = 0;
-    if (loc_x + cut <= (cube_size - overlap) / 2) {
-        x = loc_x;
-    } else if (loc_x + cut < (cube_size + overlap) / 2) {
-        x = loc_x;
-        a = loc_x + cut - (cube_size - overlap) / 2;
-    } else if (loc_x + cut <= cube_size * 2 + (cube_size - overlap) / 2) {
-        x = loc_x + overlap;
-    } else if (loc_x + cut < cube_size * 2 + (cube_size + overlap) / 2) {
-        x = loc_x + overlap;
-        a = loc_x + cut - cube_size * 2 - (cube_size - overlap) / 2;
-    } else {
-        x = loc_x + overlap * 2;
-    }
+    {
+        float x = uv.x;
+        float2 uv2 = uv;
+        int gap = (cube_size * 3 + overlap * 2 - dim.x) / 2;
 
-    if (a != 0) {
-        if (y < cube_size) {
-            val1 = read_imagef(front, sampler, (int2)(x, y));
-            val2 = read_imagef(front, sampler, (int2)(x + overlap, y));
+        if (x < cube_size || x > cube_size * 2) {
+            int dx = 0;
+            int cs = cube_size - gap;
+            float cx = fmod(x, cube_size) * cs / cube_size;
+            if (x >= cube_size * 2) {
+                dx = cube_size * 2 + overlap - gap;
+            }
+            if (cx >= (cs + overlap) / 2) {
+                dx += overlap;
+            }
+            uv2.x = cx + dx;
+            xy1 = convert_int2(floor(uv2));
+            a = uv2 - convert_float2(xy1);
+            if (cx > (cs - overlap) / 2 && cx < (cs + overlap) / 2) {
+                float da = cx - (cs - overlap) / 2;
+                uv2.x += overlap;
+                a.x = da / overlap;
+            }
+            xy2 = convert_int2(ceil(uv2));
         } else {
-            val1 = read_imagef(rear, sampler, (int2)(x, y - cube_size));
-            val2 = read_imagef(rear, sampler, (int2)(x + overlap, y - cube_size));
-        }
-        val = mix(val1, val2, (float)a / overlap);
-    } else {
-        if (y < cube_size) {
-            val = read_imagef(front, sampler, (int2)(x, y));
-        } else {
-            val = read_imagef(rear, sampler, (int2)(x, y - cube_size));
+            uv2.x += overlap - gap;
+            xy1 = convert_int2(floor(uv2));
+            xy2 = convert_int2(ceil(uv2));
+            a = uv2 - convert_float2(xy1);
         }
     }
+
+    if (uv.y >= cube_size) {
+        xy1.y -= cube_size;
+        xy2.y -= cube_size;
+    }
+    val = read_imagef(src, sampler, xy1);
+    if (a.x > 0.0 || a.y > 0.0) {
+        float4 val2;
+        float a2 = a.x;
+        val2 = read_imagef(src, sampler, xy2);
+        if (a.x > 0.0 && a.y > 0.0) {
+            float4 val3;
+            val3 = read_imagef(src, sampler, (int2)(xy1.x, xy2.y));
+            val = mix(val, val3, a.y);
+            val3 = read_imagef(src, sampler, (int2)(xy2.x, xy1.y));
+            val2 = mix(val3, val2, a.y);
+        } else if (a.y > 0.0) {
+            a2 = a.y;
+        }
+        val = mix(val, val2, a2);
+    }
+
     return val;
 }
 
 __kernel void gopromax_equirectangular(__write_only image2d_t dst,
                                        __read_only  image2d_t front,
-                                       __read_only  image2d_t rear)
+                                       __read_only  image2d_t rear,
+                                       int overlap)
 {
-    float4 val, vx, vy, vd;
+    float4 val;
     int2 loc = (int2)(get_global_id(0), get_global_id(1));
 
     int2 dst_size = get_image_dim(dst);
     int2 src_size = get_image_dim(front);
-    int2 eac_size = (int2)(src_size.x - 2 * (src_size.x * OVERLAP / BASESIZE), dst_size.y);
+    int2 eac_size = (int2)(src_size.y * 3, src_size.y * 2);
 
     float3 xyz = equirect_to_xyz(loc, dst_size);
     float2 uv = xyz_to_eac(xyz, eac_size);
-    int2 xy = convert_int2(floor(uv));
-    float2 a = uv - convert_float2(xy);
-    int2 xy2;
 
-    val = gopromax_to_eac(xy, front, rear);
-    if (a.x > 0.0) {
-        xy2.x = xy.x + 1;
-        xy2.y = xy.y;
-        vx = gopromax_to_eac(xy2, front, rear);
-        if (a.y > 0.0) {
-            xy2.y = xy.y + 1;
-            vd = gopromax_to_eac(xy2, front, rear);
-            vx = mix(vx, vd, a.y);
-        }
-        val = mix(val, vx, a.x);
-    }
-    if (a.y > 0.0) {
-        xy2.x = xy.x;
-        xy2.y = xy.y + 1;
-        vy = gopromax_to_eac(xy2, front, rear);
-        val = mix(val, vy, a.y);
+    if (uv.y >= src_size.y) {
+        val = gopromax_to_eac(uv, overlap, rear);
+    } else {
+        val = gopromax_to_eac(uv, overlap, front);
     }
 
     write_imagef(dst, loc, val);
@@ -270,12 +271,19 @@ __kernel void gopromax_equirectangular(__write_only image2d_t dst,
 
 __kernel void gopromax_stack(__write_only image2d_t dst,
                              __read_only  image2d_t front,
-                             __read_only  image2d_t rear)
+                             __read_only  image2d_t rear,
+                             int overlap)
 {
     float4 val;
     int2 loc = (int2)(get_global_id(0), get_global_id(1));
+    int2 src_size = get_image_dim(front);
+    float2 uv = convert_float2(loc);
 
-    val = gopromax_to_eac(loc, front, rear);
+    if (loc.y >= src_size.y) {
+        val = gopromax_to_eac(uv, overlap, rear);
+    } else {
+        val = gopromax_to_eac(uv, overlap, front);
+    }
 
     write_imagef(dst, loc, val);
 }
