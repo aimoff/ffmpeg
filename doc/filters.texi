@@ -27166,6 +27166,12 @@ Equi-Angular Cubemap.
 
 Default is @code{equirect}.
 
+@item w
+@item h
+Set the output video resolution.
+
+Default resolution depends on formats.
+
 @item overlap
 Set number of overlapped pixels on input .360 video.
 
@@ -27182,13 +27188,11 @@ Default is @code{64}.
 @item
 Convert .360 to Equirectangular projection.
 @example
--i INPUT -filter_complex '[0:0]hwupload[a], [0:5]hwupload[b], [a][b]gopromax_opencl, hwdownload, format=yuvj420p' -map 0:a:0 -map 0:3 -c:a copy OUTPUT
+-i INPUT -filter_complex '[0:0]hwupload[a], [0:5]hwupload[b], [a][b]gopromax_opencl=w=4096:h=2048, hwdownload, format=yuvj420p' -map 0:a:0 -c:a copy OUTPUT
 @end example
 
-Two video streams (#0:0 and #0:5) are combined and converted to default equirectangular projection.
+Two video streams (#0:0 and #0:5) are combined and converted to default equirectangular projection with specified resolution.
 First audio stream (GoPro AAC) is copied with the video stream.
-Note that @code{h264} codec can not treat such high bitrate video stream.
-Please use @code{h265} codec with @code{mkv} or @code{mov} container.
 
 @item
 Convert .360 to Equi-Angular Cubemap projection.

@@ -44,6 +44,7 @@ typedef struct GoProMaxOpenCLContext {
     int              nb_planes;
 
     int              out;
+    int              width, height;
     int              overlap;
 } GoProMaxOpenCLContext;
 
@@ -205,12 +206,42 @@ static int gopromax_opencl_config_output(AVFilterLink *outlink)
 
     switch (ctx->out) {
     case EQUIRECTANGULAR:
-        ctx->ocf.output_width = 4 * height;
-        ctx->ocf.output_height = 2 * height;
+        if (ctx->width > 0 && ctx->height > 0) {
+            if (ctx->width != ctx->height * 2) {
+                av_log(ctx, AV_LOG_ERROR,
+                       "Specified size (%dx%d) is not suitable.\n",
+                       ctx->width, ctx->height);
+                return AVERROR(EINVAL);
+            }
+            ctx->ocf.output_width = ctx->width;
+            ctx->ocf.output_height = ctx->height;
+        } else if (ctx->width > 0 || ctx->height > 0) {
+            av_log(ctx, AV_LOG_ERROR,
+                   "Both width and height values should be specified.\n");
+            return AVERROR(EINVAL);
+        } else {
+            ctx->ocf.output_width = 4 * height;
+            ctx->ocf.output_height = 2 * height;
+        }
         break;
     case EQUIANGULAR:
-        ctx->ocf.output_width = 3 * height;
-        ctx->ocf.output_height = 2 * height;
+        if (ctx->width > 0 && ctx->height > 0) {
+            if (ctx->width * 2 != ctx->height * 3) {
+                av_log(ctx, AV_LOG_ERROR,
+                       "Specified size (%dx%d) is not suitable.\n",
+                       ctx->width, ctx->height);
+                return AVERROR(EINVAL);
+            }
+            ctx->ocf.output_width = ctx->width;
+            ctx->ocf.output_height = ctx->height;
+        } else if (ctx->width > 0 || ctx->height > 0) {
+            av_log(ctx, AV_LOG_ERROR,
+                   "Both width and height values should be specified.\n");
+            return AVERROR(EINVAL);
+        } else {
+            ctx->ocf.output_width = 3 * height;
+            ctx->ocf.output_height = 2 * height;
+        }
         break;
     default:
         av_log(ctx, AV_LOG_ERROR, "Specified output format is not supported.\n");
@@ -275,6 +306,8 @@ static const AVOption gopromax_opencl_options[] = {
     {        "e", "equirectangular",                  0, AV_OPT_TYPE_CONST, {.i64=EQUIRECTANGULAR}, 0,                0, FLAGS, .unit = "out" },
     { "equirect", "equirectangular",                  0, AV_OPT_TYPE_CONST, {.i64=EQUIRECTANGULAR}, 0,                0, FLAGS, .unit = "out" },
     {      "eac", "equi-angular cubemap",             0, AV_OPT_TYPE_CONST, {.i64=EQUIANGULAR},     0,                0, FLAGS, .unit = "out" },
+    {        "w", "output width",         OFFSET(width), AV_OPT_TYPE_INT,   {.i64=0},               0,        INT16_MAX, FLAGS, .unit = "w"},
+    {        "h", "output height",       OFFSET(height), AV_OPT_TYPE_INT,   {.i64=0},               0,        INT16_MAX, FLAGS, .unit = "h"},
     {  "overlap", "set overlapped pixels", OFFSET(overlap), AV_OPT_TYPE_INT, {.i64=64},             0,              128, FLAGS, .unit = "overlap"},
     { NULL },
 };

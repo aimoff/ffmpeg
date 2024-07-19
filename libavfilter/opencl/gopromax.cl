@@ -276,10 +276,15 @@ __kernel void gopromax_stack(__write_only image2d_t dst,
 {
     float4 val;
     int2 loc = (int2)(get_global_id(0), get_global_id(1));
+    int2 dst_size = get_image_dim(dst);
     int2 src_size = get_image_dim(front);
     float2 uv = convert_float2(loc);
 
-    if (loc.y >= src_size.y) {
+    if (dst_size.y != src_size.y * 2) {
+        uv *= (float)src_size.y * 2 / dst_size.y;
+    }
+
+    if (uv.y >= src_size.y) {
         val = gopromax_to_eac(uv, overlap, rear);
     } else {
         val = gopromax_to_eac(uv, overlap, front);
