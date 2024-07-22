@@ -208,9 +208,8 @@ static float4 gopromax_to_eac(float2 uv, int overlap, __read_only image2d_t src)
             xy1 = convert_int2(floor(uv2));
             a = uv2 - convert_float2(xy1);
             if (cx > (cs - overlap) / 2 && cx < (cs + overlap) / 2) {
-                float da = cx - (cs - overlap) / 2;
                 uv2.x += overlap;
-                a.x = da / overlap;
+                a.x = (a.x + cx - (cs - overlap) / 2) / (overlap + ceil(a.x));
             }
             xy2 = convert_int2(ceil(uv2));
         } else {
@@ -221,22 +220,18 @@ static float4 gopromax_to_eac(float2 uv, int overlap, __read_only image2d_t src)
         }
     }
 
-    if (uv.y >= cube_size) {
-        xy1.y -= cube_size;
-        xy2.y -= cube_size;
-    }
     val = read_imagef(src, sampler, xy1);
-    if (a.x > 0.0 || a.y > 0.0) {
+    if (a.x > 0.f || a.y > 0.f) {
         float4 val2;
         float a2 = a.x;
         val2 = read_imagef(src, sampler, xy2);
-        if (a.x > 0.0 && a.y > 0.0) {
+        if (a.x > 0.f && a.y > 0.f) {
             float4 val3;
             val3 = read_imagef(src, sampler, (int2)(xy1.x, xy2.y));
             val = mix(val, val3, a.y);
             val3 = read_imagef(src, sampler, (int2)(xy2.x, xy1.y));
             val2 = mix(val3, val2, a.y);
-        } else if (a.y > 0.0) {
+        } else if (a.y > 0.f) {
             a2 = a.y;
         }
         val = mix(val, val2, a2);
@@ -261,6 +256,7 @@ __kernel void gopromax_equirectangular(__write_only image2d_t dst,
     float2 uv = xyz_to_eac(xyz, eac_size);
 
     if (uv.y >= src_size.y) {
+        uv.y -= src_size.y;
         val = gopromax_to_eac(uv, overlap, rear);
     } else {
         val = gopromax_to_eac(uv, overlap, front);
@@ -280,11 +276,10 @@ __kernel void gopromax_stack(__write_only image2d_t dst,
     int2 src_size = get_image_dim(front);
     float2 uv = convert_float2(loc);
 
-    if (dst_size.y != src_size.y * 2) {
-        uv *= (float)src_size.y * 2 / dst_size.y;
-    }
+    uv *= (float)src_size.y * 2 / dst_size.y;
 
     if (uv.y >= src_size.y) {
+        uv.y -= src_size.y;
         val = gopromax_to_eac(uv, overlap, rear);
     } else {
         val = gopromax_to_eac(uv, overlap, front);
