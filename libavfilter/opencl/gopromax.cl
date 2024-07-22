@@ -177,64 +177,55 @@ static float2 xyz_to_eac(float3 xyz, int2 size)
     return uv;
 }
 
-const sampler_t sampler = (CLK_NORMALIZED_COORDS_FALSE |
-                           CLK_ADDRESS_CLAMP_TO_EDGE   |
-                           CLK_FILTER_NEAREST);
+const sampler_t sampler_nearest = (CLK_NORMALIZED_COORDS_FALSE |
+                                   CLK_ADDRESS_CLAMP_TO_EDGE   |
+                                   CLK_FILTER_NEAREST);
+
+const sampler_t sampler_linear  = (CLK_NORMALIZED_COORDS_FALSE |
+                                   CLK_ADDRESS_CLAMP_TO_EDGE   |
+                                   CLK_FILTER_LINEAR);
 
 static float4 gopromax_to_eac(float2 uv, int overlap, __read_only image2d_t src)
 {
     int2 dim = get_image_dim(src);
     int cube_size = dim.y;
-    int2 xy1, xy2;
-    float2 a;
+    int gap = (cube_size * 3 + overlap * 2 - dim.x) / 2;
+    float2 uv2 = uv;
+    float a = 0.f;
     float4 val;
+    bool is_aligned;
 
-    {
-        float x = uv.x;
-        float2 uv2 = uv;
-        int gap = (cube_size * 3 + overlap * 2 - dim.x) / 2;
-
-        if (x < cube_size || x > cube_size * 2) {
-            int dx = 0;
-            int cs = cube_size - gap;
-            float cx = fmod(x, cube_size) * cs / cube_size;
-            if (x >= cube_size * 2) {
-                dx = cube_size * 2 + overlap - gap;
-            }
-            if (cx >= (cs + overlap) / 2) {
-                dx += overlap;
-            }
-            uv2.x = cx + dx;
-            xy1 = convert_int2(floor(uv2));
-            a = uv2 - convert_float2(xy1);
-            if (cx > (cs - overlap) / 2 && cx < (cs + overlap) / 2) {
-                uv2.x += overlap;
-                a.x = (a.x + cx - (cs - overlap) / 2) / (overlap + ceil(a.x));
-            }
-            xy2 = convert_int2(ceil(uv2));
-        } else {
-            uv2.x += overlap - gap;
-            xy1 = convert_int2(floor(uv2));
-            xy2 = convert_int2(ceil(uv2));
-            a = uv2 - convert_float2(xy1);
-        }
+    if (uv.x < cube_size || uv.x > cube_size * 2) {
+        int dx = 0;
+        int cs = cube_size - gap;
+        float cx = fmod(uv.x, cube_size) * cs / cube_size;
+        if (uv.x >= cube_size * 2)
+            dx = cube_size * 2 + overlap - gap;
+        if (cx >= (cs + overlap) / 2)
+            dx += overlap;
+        uv2.x = cx + dx;
+        if (cx > (cs - overlap) / 2 && cx < (cs + overlap) / 2)
+            a = (cx - (cs - overlap) / 2) / overlap;
+    } else {
+        uv2.x += overlap - gap;
     }
 
-    val = read_imagef(src, sampler, xy1);
-    if (a.x > 0.f || a.y > 0.f) {
+    {
+        int2 d = convert_int2(ceil(uv2) - floor(uv2));
+        is_aligned = (d.x == 0 && d.y == 0);
+    }
+    if (is_aligned)
+        val = read_imagef(src, sampler_nearest, uv2);
+    else
+        val = read_imagef(src, sampler_linear, uv2);
+    if (a > 0.f) {
         float4 val2;
-        float a2 = a.x;
-        val2 = read_imagef(src, sampler, xy2);
-        if (a.x > 0.f && a.y > 0.f) {
-            float4 val3;
-            val3 = read_imagef(src, sampler, (int2)(xy1.x, xy2.y));
-            val = mix(val, val3, a.y);
-            val3 = read_imagef(src, sampler, (int2)(xy2.x, xy1.y));
-            val2 = mix(val3, val2, a.y);
-        } else if (a.y > 0.f) {
-            a2 = a.y;
-        }
-        val = mix(val, val2, a2);
+        uv2.x += overlap;
+        if (is_aligned)
+            val2 = read_imagef(src, sampler_nearest, uv2);
+        else
+            val2 = read_imagef(src, sampler_linear, uv2);
+        val = mix(val, val2, a);
     }
 
     return val;
