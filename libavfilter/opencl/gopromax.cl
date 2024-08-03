@@ -174,6 +174,8 @@ static float2 xyz_to_eac(float3 xyz, int2 size)
     uv.x *= size.x;
     uv.y *= size.y;
 
+    uv -= 0.5f;
+
     return uv;
 }
 
