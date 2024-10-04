@@ -24,6 +24,7 @@ extern const char *ff_source_colorkey_cl;
 extern const char *ff_source_colorspace_common_cl;
 extern const char *ff_source_convolution_cl;
 extern const char *ff_source_deshake_cl;
+extern const char *ff_source_gopromax_cl;
 extern const char *ff_source_neighbor_cl;
 extern const char *ff_source_nlmeans_cl;
 extern const char *ff_source_overlay_cl;
