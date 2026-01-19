@@ -307,6 +307,7 @@ extern const FFFilter ff_vf_fsync;
 extern const FFFilter ff_vf_gblur;
 extern const FFFilter ff_vf_gblur_vulkan;
 extern const FFFilter ff_vf_geq;
+extern const FFFilter ff_vf_gopromax;
 extern const FFFilter ff_vf_gradfun;
 extern const FFFilter ff_vf_graphmonitor;
 extern const FFFilter ff_vf_grayworld;

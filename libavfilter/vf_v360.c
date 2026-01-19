@@ -35,6 +35,8 @@
 
 #include <math.h>
 
+#include "config_components.h"
+
 #include "libavutil/avassert.h"
 #include "libavutil/mem.h"
 #include "libavutil/pixdesc.h"
@@ -42,6 +44,7 @@
 #include "avfilter.h"
 #include "filters.h"
 #include "formats.h"
+#include "framesync.h"
 #include "video.h"
 #include "v360.h"
 
@@ -5008,3 +5011,295 @@ const FFFilter ff_vf_v360 = {
     FILTER_QUERY_FUNC2(query_formats),
     .process_command = process_command,
 };
+
+#if CONFIG_GOPROMAX_FILTER
+typedef struct GoProMaxContext {
+    const AVClass *class;
+    const AVPixFmtDescriptor *pix_desc;
+    FFFrameSync fs;
+
+    int overlap;
+
+    int nb_threads;
+    int nb_planes;
+
+    int hsub[AV_VIDEO_MAX_PLANES], vsub[AV_VIDEO_MAX_PLANES];
+    uint8_t **work;
+} GoProMaxContext;
+
+#define GOFFSET(x) offsetof(GoProMaxContext, x)
+static const AVOption gopromax_options[] = {
+    {  "overlap", "set overlapped pixels",           GOFFSET(overlap), AV_OPT_TYPE_INT, {.i64=64},              0,                 128, FLAGS, .unit = "overlap"},
+    { NULL }
+};
+
+FRAMESYNC_DEFINE_CLASS_EXT(gopromax, GoProMaxContext, fs, gopromax_options);
+
+typedef struct ThreadDataGoproMax {
+    AVFrame *in;
+    AVFrame *out;
+    int y;
+} ThreadDataGoproMax;
+
+// Convert GoPro Max format to normalized EAC
+
+static void gopromax_remap_cube_8bit_c(uint8_t *dst, const uint8_t *const src,
+                                       uint8_t *buf, const int step,
+                                       const int cube_size, const int gp_cube_width,
+                                       const int cube_sub, const int overlap)
+{
+    unsigned cl, cr;
+    const uint8_t *p = src;
+    uint8_t *d = dst;
+    uint8_t *b = buf;
+    const int cs = gp_cube_width - overlap;
+
+    // merge overlapped area
+    memcpy(b, p, cube_sub * step);
+    p += cube_sub * step;
+    b += cube_sub * step;
+    for (int i = 0; i < overlap; i++) {
+        cl = *p;
+        cr = *(p + overlap * step);
+        *b = (cl * (overlap - i) + cr * i) / overlap;
+        p += step;
+        b += step;
+    }
+    p += overlap * step;
+    memcpy(b, p, cube_sub * step);
+
+    // rescale
+    for (int i = 0; i < cube_size; i ++) {
+        int n = cs * i / cube_size;
+        int m = (cs * i % cube_size) / 256;
+        b = buf + n * step;
+
+        cl = *b;
+        cr = *(b + step);
+        *d = (cl * (256 - m) + cr * m) / 256;
+        d += step;
+    }
+}
+
+static void gopromax_remap_line_8bit_c(uint8_t *dst, const uint8_t *const src,
+                                       uint8_t *buf, const int step,
+                                       int cube_size, const int gp_cube_width,
+                                       const int cube_sub, const int overlap)
+{
+    const uint8_t *p = src;
+    uint8_t *d = dst;
+
+    gopromax_remap_cube_8bit_c(d, p, buf, step, cube_size,
+                               gp_cube_width, cube_sub, overlap);
+    p += gp_cube_width * step;
+    d += cube_size * step;
+
+    memcpy(d, p, cube_size * step);
+    p += cube_size * step;
+    d += cube_size * step;
+
+    gopromax_remap_cube_8bit_c(d, p, buf, step, cube_size,
+                               gp_cube_width, cube_sub, overlap);
+}
+
+static int gopromax_slice(AVFilterContext *ctx, void *arg, int jobnr, int nb_jobs)
+{
+    GoProMaxContext *s = ctx->priv;
+    ThreadDataGoproMax *td = arg;
+    AVFrame *in = td->in;
+    AVFrame *out = td->out;
+    uint8_t *buf = s->work[jobnr];
+
+    for (int plane = 0; plane < s->nb_planes && in->data[plane] && in->linesize[plane]; plane++) {
+        const int step          = s->pix_desc->comp[plane].step;
+        const int in_width      = AV_CEIL_RSHIFT(in->width, s->hsub[plane]);
+        const int width         = AV_CEIL_RSHIFT(out->width, s->hsub[plane]);
+        const int height        = AV_CEIL_RSHIFT(in->height, s->vsub[plane]);
+        const int offset_h      = AV_CEIL_RSHIFT(td->y, s->vsub[plane]);
+        const int cube_size     = width / 3;
+        const int overlap       = AV_CEIL_RSHIFT(s->overlap, s->hsub[plane]);
+        const int gp_cube_width = (in_width - cube_size) / 2;
+        const int gp_cube_sub   = (gp_cube_width - overlap * 2) / 2;
+        const int start         = (height *  jobnr   ) / nb_jobs;
+        const int end           = (height * (jobnr+1)) / nb_jobs;
+        uint8_t *inrow, *outrow;
+
+        inrow  = in ->data[plane] + start * in->linesize[plane];
+        outrow = out->data[plane] + (offset_h + start) * out->linesize[plane];
+
+        for (int y = start; y < end && y < height && in->linesize[plane]; y++) {
+            gopromax_remap_line_8bit_c(outrow, inrow, buf, step,
+                                       cube_size, gp_cube_width, 
+                                       gp_cube_sub, overlap);
+            inrow  += in ->linesize[plane];
+            outrow += out->linesize[plane];
+        }
+    }
+
+    return 0;
+}
+
+static int gopromax_filter_frame(FFFrameSync *fs)
+{
+    AVFilterContext *ctx = fs->parent;
+    GoProMaxContext *s = ctx->priv;
+    AVFilterLink *outlink = ctx->outputs[0];
+    AVFrame *front, *rear, *out;
+    ThreadDataGoproMax td;
+    int ret;
+
+    if ((ret = ff_framesync_dualinput_get(fs, &front, &rear)) < 0)
+        return ret;
+    if (!rear) {
+        av_log(ctx, AV_LOG_ERROR, "Can't get 2nd video frame.\n");
+        av_frame_free(&front);
+        return AVERROR(EINVAL);
+    }
+
+    out = ff_get_video_buffer(outlink, outlink->w, outlink->h);
+    if (!out) {
+        av_log(ctx, AV_LOG_ERROR, "Can't get output video buffer.\n");
+        av_frame_free(&front);
+        return AVERROR(ENOMEM);
+    }
+    av_frame_copy_props(out, front);
+
+    td.in = front;
+    td.out = out;
+    td.y = 0;
+    ff_filter_execute(ctx, gopromax_slice, &td, NULL, s->nb_threads);
+    td.in = rear;
+    td.y = front->height;
+    ff_filter_execute(ctx, gopromax_slice, &td, NULL, s->nb_threads);
+
+    av_frame_free(&front);      /* rear frame will be freed */
+
+    return ff_filter_frame(outlink, out);
+}
+
+static int gopromax_config_output(AVFilterLink *outlink)
+{
+    AVFilterContext *ctx = outlink->src;
+    AVFilterLink *inlink = ctx->inputs[0];
+    GoProMaxContext   *s = ctx->priv;
+    const int  cube_size = inlink->h;
+    int err;
+
+    if ((err = ff_framesync_init_dualinput(&s->fs, ctx)) < 0)
+        return err;
+
+    if ((inlink->w != ctx->inputs[1]->w) ||
+        (inlink->h != ctx->inputs[1]->h) ||
+        (inlink->format != ctx->inputs[1]->format)) {
+        av_log(ctx, AV_LOG_ERROR, "Incompatible inputs for GoPro Max.\n");
+        return AVERROR(EINVAL);
+    }
+
+    outlink->w                   = cube_size * 3;
+    outlink->h                   = cube_size * 2;
+    outlink->time_base           = inlink->time_base;
+    outlink->format              = inlink->format;
+    outlink->sample_aspect_ratio = inlink->sample_aspect_ratio;
+
+    s->nb_planes = av_pix_fmt_count_planes(inlink->format);
+    s->pix_desc  = av_pix_fmt_desc_get(inlink->format);
+    s->hsub[0] = s->hsub[3] = 0;
+    s->hsub[1] = s->hsub[2] = s->pix_desc->log2_chroma_w;
+    s->vsub[0] = s->vsub[3] = 0;
+    s->vsub[1] = s->vsub[2] = s->pix_desc->log2_chroma_h;
+
+    s->nb_threads  = FFMIN(inlink->h, ff_filter_get_nb_threads(ctx));
+
+    s->work = av_calloc(s->nb_threads, sizeof(uint8_t *));
+    if (!s->work)
+        return AVERROR(ENOMEM);
+    for (int i = 0; i < s->nb_threads; i++) {
+        s->work[i] = av_calloc(cube_size, sizeof(uint8_t) * 2);
+        if (!s->work[i])
+            return AVERROR(ENOMEM);
+    }
+
+    err = ff_framesync_configure(&s->fs);
+    outlink->time_base = s->fs.time_base;
+
+    return err;
+}
+
+#if 0
+static int gopromax_process_command(AVFilterContext *ctx, const char *cmd, const char *args,
+                                    char *res, int res_len, int flags)
+{
+    GoProMaxContext *s = ctx->priv;
+
+    return 0;
+}
+#endif
+
+static int gopromax_activate(AVFilterContext *ctx)
+{
+    GoProMaxContext *s = ctx->priv;
+
+    return ff_framesync_activate(&s->fs);
+}
+
+static av_cold void gopromax_uninit(AVFilterContext *ctx)
+{
+    GoProMaxContext *s = ctx->priv;
+
+    ff_framesync_uninit(&s->fs);
+    if (s->work)
+        for (int n = 0; n < s->nb_threads; n++)
+            av_freep(&s->work[n]);
+    av_freep(&s->work);
+}
+
+static av_cold int gopromax_init(AVFilterContext *ctx)
+{
+    GoProMaxContext *s = ctx->priv;
+
+    s->fs.on_event = gopromax_filter_frame;
+
+    return 0;
+}
+
+static const AVFilterPad gopromax_inputs[] = {
+    {
+        .name         = "front",
+        .type         = AVMEDIA_TYPE_VIDEO,
+    },
+    {
+        .name         = "rear",
+        .type         = AVMEDIA_TYPE_VIDEO,
+    },
+};
+
+static const AVFilterPad gopromax_outputs[] = {
+    {
+        .name         = "default",
+        .type         = AVMEDIA_TYPE_VIDEO,
+        .config_props = gopromax_config_output,
+    },
+};
+
+static const enum AVPixelFormat gopromax_pix_fmts[] = {
+    AV_PIX_FMT_YUV444P, AV_PIX_FMT_YUV440P, AV_PIX_FMT_YUV422P, AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUV411P, AV_PIX_FMT_YUV410P,
+    AV_PIX_FMT_YUVJ444P, AV_PIX_FMT_YUVJ440P, AV_PIX_FMT_YUVJ422P,AV_PIX_FMT_YUVJ420P, AV_PIX_FMT_YUVJ411P,
+    AV_PIX_FMT_NONE
+};
+
+const FFFilter ff_vf_gopromax = {
+    .p.name        = "gopromax",
+    .p.description = NULL_IF_CONFIG_SMALL("Convert GoPro Max .360 to normalized Equi-Angular Cubemap projection"),
+    .p.priv_class  = &gopromax_class,
+    .p.flags       = AVFILTER_FLAG_SLICE_THREADS,
+    .priv_size     = sizeof(GoProMaxContext),
+    .preinit       = gopromax_framesync_preinit,
+    .init          = gopromax_init,
+    .uninit        = gopromax_uninit,
+    .activate      = gopromax_activate,
+    FILTER_INPUTS(gopromax_inputs),
+    FILTER_OUTPUTS(gopromax_outputs),
+    FILTER_PIXFMTS_ARRAY(gopromax_pix_fmts),
+//    .process_command = gopromax_process_command,
+};
+#endif
