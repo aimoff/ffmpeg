@@ -181,7 +181,7 @@ typedef struct V360Context {
     SliceXYRemap *slice_remap;
     unsigned map[AV_VIDEO_MAX_PLANES];
 
-#if CONFIG_GOPROMAX_FILTER
+#if CONFIG_V360GOPRO_FILTER
     FFFrameSync fs;
 
     int gopromax;

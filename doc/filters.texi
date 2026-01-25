@@ -24134,6 +24134,7 @@ Convert 360 videos between various formats.
 
 The filter accepts the following options:
 
+@anchor{v360 options}
 @table @option
 
 @item input
@@ -24541,6 +24542,54 @@ v360=eac:equirect:in_stereo=sbs:in_trans=1:ih_flip=1:out_stereo=tb
 @subsection Commands
 
 This filter supports subset of above options as @ref{commands}.
+
+@section v360gopro
+
+Convert GoPro Max .360 video to various formats.
+
+This filter is designed to use GoPro Max .360 files as inputs.
+Native .360 files are sort of EAC files, in fact the front and rear lenses streams are the top and the bottom of the EAC projection.
+
+The .360 file contains two video streams.
+Most of cases, one is stream #0:0, and the other is stream #0:5.
+Please check actual stream number with @code{ffprobe} command.
+This filter combine two streams to single stream.
+
+The .360 contains also 2x64 pixels of overlapped area.
+The filter blends overlapped images in these two areas.
+
+The filter accepts most of @ref{v360 options}, but ignores @code{input} option.
+There is a @code{v360gopro} specific option:
+
+@table @option
+
+@item overlap
+Set number of overlapped pixels on input .360 video.
+
+No need to specify this option for native .360 video file.
+This option is for rescaled video or future video format change.
+
+Default is @code{64}.
+
+@end table
+
+@subsection Example
+
+@itemize
+@item
+Convert .360 to Equirectangular projection.
+@example
+ffmpeg -i INPUT.360 -filter_complex '[0:0][0:5]v360gopro=output=e:w=4096:h=2048' -map 0:1 -map 0:3 -c:a copy -c:u copy OUTPUT.mp4
+@end example
+
+Two video streams (#0:0 and #0:5) are combined and converted to equirectangular projection with specified resolution.
+Stream #0:1 (GoPro AAC) and stream #0:3 (GoPro MET) are copied with the video stream.
+
+@end itemize
+
+@subsection Commands
+
+This filter supports subset of @ref{v360 options} as @ref{commands}.
 
 @section vaguedenoiser
 

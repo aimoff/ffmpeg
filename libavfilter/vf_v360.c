@@ -167,7 +167,7 @@ static const AVOption v360_options[] = {
     {  "v_offset", "output vertical off-axis offset",  OFFSET(v_offset), AV_OPT_TYPE_FLOAT,{.dbl=0.f},       -1.f,                 1.f,TFLAGS, .unit = "v_offset"},
     {"alpha_mask", "build mask in alpha plane",      OFFSET(alpha), AV_OPT_TYPE_BOOL,   {.i64=0},               0,                   1, FLAGS, .unit = "alpha"},
     { "reset_rot", "reset rotation",             OFFSET(reset_rot), AV_OPT_TYPE_BOOL,   {.i64=0},              -1,                   1,TFLAGS, .unit = "reset_rot"},
-#if CONFIG_GOPROMAX_FILTER
+#if CONFIG_V360GOPRO_FILTER
     {  "overlap", "overlapped pixels for GoPro Max",  OFFSET(overlap), AV_OPT_TYPE_INT, {.i64=64},              0,                 128, FLAGS, .unit = "overlap"},
 #endif
     { NULL }
@@ -4433,7 +4433,7 @@ static int config_output(AVFilterLink *outlink)
         av_assert0(0);
     }
 
-#if CONFIG_GOPROMAX_FILTER
+#if CONFIG_V360GOPRO_FILTER
     if (s->gopromax) {
         s->in = EQUIANGULAR;
         w = inlink->h * 3;
@@ -5020,20 +5020,20 @@ const FFFilter ff_vf_v360 = {
     .process_command = process_command,
 };
 
-#if CONFIG_GOPROMAX_FILTER
-FRAMESYNC_DEFINE_CLASS_EXT(gopromax, V360Context, fs, v360_options);
+#if CONFIG_V360GOPRO_FILTER
+FRAMESYNC_DEFINE_CLASS_EXT(v360gopro, V360Context, fs, v360_options);
 
-typedef struct ThreadDataGoproMax {
+typedef struct ThreadDataGopro {
     AVFrame *in;
     AVFrame *out;
     int y;
-} ThreadDataGoproMax;
+} ThreadDataGopro;
 
 // Convert GoPro Max format to normalized EAC
 
-static void gopromax_remap_cube_8bit_c(uint8_t *dst, const uint8_t *const src, uint8_t *buf,
-                                       const int cube_size, const int gp_cube_width,
-                                       const int cube_sub, const int overlap)
+static void gopro_remap_cube_8bit_c(uint8_t *dst, const uint8_t *const src, uint8_t *buf,
+                                    const int cube_size, const int gp_cube_width,
+                                    const int cube_sub, const int overlap)
 {
     unsigned cl, cr;
     const uint8_t *p = src;
@@ -5068,15 +5068,15 @@ static void gopromax_remap_cube_8bit_c(uint8_t *dst, const uint8_t *const src, u
     }
 }
 
-static void gopromax_remap_line_8bit_c(uint8_t *dst, const uint8_t *const src, uint8_t *buf,
-                                       int cube_size, const int gp_cube_width,
-                                       const int cube_sub, const int overlap)
+static void gopro_remap_line_8bit_c(uint8_t *dst, const uint8_t *const src, uint8_t *buf,
+                                    int cube_size, const int gp_cube_width,
+                                    const int cube_sub, const int overlap)
 {
     const uint8_t *p = src;
     uint8_t *d = dst;
 
-    gopromax_remap_cube_8bit_c(d, p, buf, cube_size,
-                               gp_cube_width, cube_sub, overlap);
+    gopro_remap_cube_8bit_c(d, p, buf, cube_size,
+                            gp_cube_width, cube_sub, overlap);
     p += gp_cube_width;
     d += cube_size;
 
@@ -5084,14 +5084,14 @@ static void gopromax_remap_line_8bit_c(uint8_t *dst, const uint8_t *const src, u
     p += cube_size;
     d += cube_size;
 
-    gopromax_remap_cube_8bit_c(d, p, buf, cube_size,
-                               gp_cube_width, cube_sub, overlap);
+    gopro_remap_cube_8bit_c(d, p, buf, cube_size,
+                            gp_cube_width, cube_sub, overlap);
 }
 
-static int gopromax_slice(AVFilterContext *ctx, void *arg, int jobnr, int nb_jobs)
+static int gopro_slice(AVFilterContext *ctx, void *arg, int jobnr, int nb_jobs)
 {
     V360Context *s = ctx->priv;
-    ThreadDataGoproMax *td = arg;
+    ThreadDataGopro *td = arg;
     AVFrame  *in = td->in;
     AVFrame *out = td->out;
     uint8_t *buf = s->work[jobnr];
@@ -5113,9 +5113,8 @@ static int gopromax_slice(AVFilterContext *ctx, void *arg, int jobnr, int nb_job
         outrow = out->data[plane] + (offset_h + start) * out->linesize[plane];
 
         for (int y = start; y < end && y < height && in->linesize[plane]; y++) {
-            gopromax_remap_line_8bit_c(outrow, inrow, buf,
-                                       cube_size, gp_cube_width, 
-                                       gp_cube_sub, overlap);
+            gopro_remap_line_8bit_c(outrow, inrow, buf, cube_size,
+                                    gp_cube_width, gp_cube_sub, overlap);
             inrow  += in ->linesize[plane];
             outrow += out->linesize[plane];
         }
@@ -5124,12 +5123,12 @@ static int gopromax_slice(AVFilterContext *ctx, void *arg, int jobnr, int nb_job
     return 0;
 }
 
-static int gopromax_filter_frame(FFFrameSync *fs)
+static int v360gopro_filter_frame(FFFrameSync *fs)
 {
     AVFilterContext *ctx = fs->parent;
     V360Context *s = ctx->priv;
     AVFrame *front, *rear, *in;
-    ThreadDataGoproMax td;
+    ThreadDataGopro td;
     int ret;
 
     if ((ret = ff_framesync_dualinput_get(fs, &front, &rear)) < 0)
@@ -5161,17 +5160,17 @@ static int gopromax_filter_frame(FFFrameSync *fs)
     td.in = front;
     td.out = in;
     td.y = 0;
-    ff_filter_execute(ctx, gopromax_slice, &td, NULL, s->nb_threads);
+    ff_filter_execute(ctx, gopro_slice, &td, NULL, s->nb_threads);
     td.in = rear;
     td.y = front->height;
-    ff_filter_execute(ctx, gopromax_slice, &td, NULL, s->nb_threads);
+    ff_filter_execute(ctx, gopro_slice, &td, NULL, s->nb_threads);
 
     av_frame_free(&front);      /* rear frame will be freed */
 
     return filter_frame(ctx->inputs[0], in);
 }
 
-static int gopromax_config_output(AVFilterLink *outlink)
+static int v360gopro_config_output(AVFilterLink *outlink)
 {
     AVFilterContext *ctx = outlink->src;
     AVFilterLink *inlink = ctx->inputs[0];
@@ -5218,14 +5217,14 @@ static int gopromax_config_output(AVFilterLink *outlink)
     return err;
 }
 
-static int gopromax_activate(AVFilterContext *ctx)
+static int v360gopro_activate(AVFilterContext *ctx)
 {
     V360Context *s = ctx->priv;
 
     return ff_framesync_activate(&s->fs);
 }
 
-static av_cold void gopromax_uninit(AVFilterContext *ctx)
+static av_cold void v360gopro_uninit(AVFilterContext *ctx)
 {
     V360Context *s = ctx->priv;
 
@@ -5238,18 +5237,18 @@ static av_cold void gopromax_uninit(AVFilterContext *ctx)
     uninit(ctx);
 }
 
-static av_cold int gopromax_init(AVFilterContext *ctx)
+static av_cold int v360gopro_init(AVFilterContext *ctx)
 {
     V360Context *s = ctx->priv;
 
     s->gopromax = 1;
     s->in = EQUIANGULAR;
-    s->fs.on_event = gopromax_filter_frame;
+    s->fs.on_event = v360gopro_filter_frame;
 
     return init(ctx);
 }
 
-static const AVFilterPad gopromax_inputs[] = {
+static const AVFilterPad v360gopro_inputs[] = {
     {
         .name         = "front",
         .type         = AVMEDIA_TYPE_VIDEO,
@@ -5260,26 +5259,26 @@ static const AVFilterPad gopromax_inputs[] = {
     },
 };
 
-static const AVFilterPad gopromax_outputs[] = {
+static const AVFilterPad v360gopro_outputs[] = {
     {
         .name         = "default",
         .type         = AVMEDIA_TYPE_VIDEO,
-        .config_props = gopromax_config_output,
+        .config_props = v360gopro_config_output,
     },
 };
 
-const FFFilter ff_vf_gopromax = {
-    .p.name        = "gopromax",
+const FFFilter ff_vf_v360gopro = {
+    .p.name        = "v360gopro",
     .p.description = NULL_IF_CONFIG_SMALL("Convert GoPro Max 360 projection of video."),
-    .p.priv_class  = &gopromax_class,
+    .p.priv_class  = &v360gopro_class,
     .p.flags       = AVFILTER_FLAG_SLICE_THREADS,
     .priv_size     = sizeof(V360Context),
-    .preinit       = gopromax_framesync_preinit,
-    .init          = gopromax_init,
-    .uninit        = gopromax_uninit,
-    .activate      = gopromax_activate,
-    FILTER_INPUTS(gopromax_inputs),
-    FILTER_OUTPUTS(gopromax_outputs),
+    .preinit       = v360gopro_framesync_preinit,
+    .init          = v360gopro_init,
+    .uninit        = v360gopro_uninit,
+    .activate      = v360gopro_activate,
+    FILTER_INPUTS(v360gopro_inputs),
+    FILTER_OUTPUTS(v360gopro_outputs),
     FILTER_QUERY_FUNC2(query_formats),
     .process_command = process_command,
 };
