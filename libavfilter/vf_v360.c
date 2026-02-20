@@ -5131,7 +5131,8 @@ static int v360gopro_filter_frame(FFFrameSync *fs)
     ThreadDataGopro td;
     int ret;
 
-    if ((ret = ff_framesync_dualinput_get(fs, &front, &rear)) < 0)
+    ret = ff_framesync_dualinput_get(fs, &front, &rear);
+    if (ret < 0)
         return ret;
     if (!rear) {
         av_log(ctx, AV_LOG_ERROR, "Can't get 2nd video frame.\n");
@@ -5149,7 +5150,8 @@ static int v360gopro_filter_frame(FFFrameSync *fs)
     in->height    = front->height + rear->height;
     in->format    = ctx->inputs[0]->format;
 
-    if ((ret = av_frame_get_buffer(in, 0)) < 0) {
+    ret = av_frame_get_buffer(in, 0);
+    if (ret < 0) {
         av_log(ctx, AV_LOG_ERROR, "Can't allocate work video buffer.\n");
         av_frame_free(&in);
         av_frame_free(&front);
@@ -5179,18 +5181,22 @@ static int v360gopro_config_output(AVFilterLink *outlink)
     const int  cube_size = inlink->h;
     int err;
 
-    if ((err = ff_framesync_init_dualinput(&s->fs, ctx)) < 0)
+    err = ff_framesync_init_dualinput(&s->fs, ctx);
+    if (err  < 0)
         return err;
 
     if ((inlink->w != ctx->inputs[1]->w) ||
         (inlink->h != ctx->inputs[1]->h) ||
+        (inlink->w < inlink->h * 3) ||
+        (inlink->w > inlink->h * 3 + s->overlap * 2) ||
         (inlink->format != ctx->inputs[1]->format) ||
         desc->comp[0].depth > 8) {
         av_log(ctx, AV_LOG_ERROR, "Incompatible inputs for GoPro Max.\n");
         return AVERROR(EINVAL);
     }
 
-    if ((err = config_output(ctx->outputs[0])) < 0)
+    err = config_output(ctx->outputs[0]);
+    if (err < 0)
         return err;
 
     s->hsub[0] = s->hsub[3] = 0;
