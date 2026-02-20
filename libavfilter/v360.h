@@ -189,6 +189,10 @@ typedef struct V360Context {
 
     int hsub[AV_VIDEO_MAX_PLANES], vsub[AV_VIDEO_MAX_PLANES];
     uint8_t **work;
+
+    void (*gopro_remap_line)(void *dst, const void *const src, void *buf,
+                             int cube_size, const int gp_cube_width,
+                             const int cube_sub, const int overlap);
 #endif
 
     int (*in_transform)(const struct V360Context *s,

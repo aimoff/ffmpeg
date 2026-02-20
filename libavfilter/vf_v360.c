@@ -168,7 +168,7 @@ static const AVOption v360_options[] = {
     {"alpha_mask", "build mask in alpha plane",      OFFSET(alpha), AV_OPT_TYPE_BOOL,   {.i64=0},               0,                   1, FLAGS, .unit = "alpha"},
     { "reset_rot", "reset rotation",             OFFSET(reset_rot), AV_OPT_TYPE_BOOL,   {.i64=0},              -1,                   1,TFLAGS, .unit = "reset_rot"},
 #if CONFIG_V360GOPRO_FILTER
-    {  "overlap", "overlapped pixels for GoPro Max",  OFFSET(overlap), AV_OPT_TYPE_INT, {.i64=64},              0,                 128, FLAGS, .unit = "overlap"},
+    {  "overlap", "overlapped pixels for GoPro Max",  OFFSET(overlap), AV_OPT_TYPE_INT, {.i64=64},              0,                 256, FLAGS, .unit = "overlap"},
 #endif
     { NULL }
 };
@@ -5031,62 +5031,70 @@ typedef struct ThreadDataGopro {
 
 // Convert GoPro Max format to normalized EAC
 
-static void gopro_remap_cube_8bit_c(uint8_t *dst, const uint8_t *const src, uint8_t *buf,
-                                    const int cube_size, const int gp_cube_width,
-                                    const int cube_sub, const int overlap)
-{
-    unsigned cl, cr;
-    const uint8_t *p = src;
-    uint8_t *d = dst;
-    uint8_t *b = buf;
-    const int cs = gp_cube_width - overlap;
-
-    // merge overlapped area
-    memcpy(b, p, cube_sub);
-    p += cube_sub;
-    b += cube_sub;
-    for (int i = 0; i < overlap; i++) {
-        cl = *p;
-        cr = *(p + overlap);
-        *b = (cl * (overlap - i) + cr * i) / overlap;
-        p++;
-        b++;
-    }
-    p += overlap;
-    memcpy(b, p, cube_sub);
-
-    // rescale
-    for (int i = 0; i < cube_size; i++) {
-        int n = cs * i / cube_size;
-        int m = cs * i % cube_size;
-        b = buf + n;
-
-        cl = *b;
-        cr = *(b + 1);
-        *d = (cl * (cube_size - m) + cr * m) / cube_size;
-        d++;
-    }
+#define DEFINE_GOPRO_REMAP_CUBE(bits)                                                    \
+static void gopro_remap_cube_##bits##bit_c(void *dst, const void *const src, void *buf,  \
+                                           int cube_size, const int gp_cube_width,       \
+                                           const int cube_sub, const int overlap)        \
+{                                                                                        \
+    unsigned cl, cr;                                                                     \
+    const uint##bits##_t *p = src;                                                       \
+    uint##bits##_t *d = dst;                                                             \
+    uint##bits##_t *b = buf;                                                             \
+    const int cs = gp_cube_width - overlap;                                              \
+                                                                                         \
+    /* merge overlapped area */                                                          \
+    memcpy(b, p, cube_sub * sizeof(uint##bits##_t));                                     \
+    p += cube_sub;                                                                       \
+    b += cube_sub;                                                                       \
+    for (int i = 0; i < overlap; i++) {                                                  \
+        cl = *p;                                                                         \
+        cr = *(p + overlap);                                                             \
+        *b = (cl * (overlap - i) + cr * i) / overlap;                                    \
+        p++;                                                                             \
+        b++;                                                                             \
+    }                                                                                    \
+    p += overlap;                                                                        \
+    memcpy(b, p, cube_sub * sizeof(uint##bits##_t));                                     \
+                                                                                         \
+    /* rescale */                                                                        \
+    for (int i = 0; i < cube_size; i++) {                                                \
+        int n = cs * i / cube_size;                                                      \
+        int m = cs * i % cube_size;                                                      \
+        b = (uint##bits##_t *)buf + n;                                                   \
+                                                                                         \
+        cl = *b;                                                                         \
+        cr = *(b + 1);                                                                   \
+        *d = (cl * (cube_size - m) + cr * m) / cube_size;                                \
+        d++;                                                                             \
+    }                                                                                    \
 }
 
-static void gopro_remap_line_8bit_c(uint8_t *dst, const uint8_t *const src, uint8_t *buf,
-                                    int cube_size, const int gp_cube_width,
-                                    const int cube_sub, const int overlap)
-{
-    const uint8_t *p = src;
-    uint8_t *d = dst;
+DEFINE_GOPRO_REMAP_CUBE( 8)
+DEFINE_GOPRO_REMAP_CUBE(16)
 
-    gopro_remap_cube_8bit_c(d, p, buf, cube_size,
-                            gp_cube_width, cube_sub, overlap);
-    p += gp_cube_width;
-    d += cube_size;
-
-    memcpy(d, p, cube_size);
-    p += cube_size;
-    d += cube_size;
-
-    gopro_remap_cube_8bit_c(d, p, buf, cube_size,
-                            gp_cube_width, cube_sub, overlap);
+#define DEFINE_GOPRO_REMAP_LINE(bits)                                                    \
+static void gopro_remap_line_##bits##bit_c(void *dst, const void *const src, void *buf,  \
+                                           int cube_size, const int gp_cube_width,       \
+                                           const int cube_sub, const int overlap)        \
+{                                                                                        \
+    const uint##bits##_t *p = src;                                                       \
+    uint##bits##_t *d = dst;                                                             \
+                                                                                         \
+    gopro_remap_cube_##bits##bit_c(d, p, buf, cube_size,                                 \
+                                   gp_cube_width, cube_sub, overlap);                    \
+    p += gp_cube_width;                                                                  \
+    d += cube_size;                                                                      \
+                                                                                         \
+    memcpy(d, p, cube_size * sizeof(uint##bits##_t));                                    \
+    p += cube_size;                                                                      \
+    d += cube_size;                                                                      \
+                                                                                         \
+    gopro_remap_cube_##bits##bit_c(d, p, buf, cube_size,                                 \
+                                   gp_cube_width, cube_sub, overlap);                    \
 }
+
+DEFINE_GOPRO_REMAP_LINE( 8)
+DEFINE_GOPRO_REMAP_LINE(16)
 
 static int gopro_slice(AVFilterContext *ctx, void *arg, int jobnr, int nb_jobs)
 {
@@ -5113,8 +5121,8 @@ static int gopro_slice(AVFilterContext *ctx, void *arg, int jobnr, int nb_jobs)
         outrow = out->data[plane] + (offset_h + start) * out->linesize[plane];
 
         for (int y = start; y < end && y < height && in->linesize[plane]; y++) {
-            gopro_remap_line_8bit_c(outrow, inrow, buf, cube_size,
-                                    gp_cube_width, gp_cube_sub, overlap);
+            s->gopro_remap_line(outrow, inrow, buf, cube_size,
+                                gp_cube_width, gp_cube_sub, overlap);
             inrow  += in ->linesize[plane];
             outrow += out->linesize[plane];
         }
@@ -5190,10 +5198,12 @@ static int v360gopro_config_output(AVFilterLink *outlink)
         (inlink->w < inlink->h * 3) ||
         (inlink->w > inlink->h * 3 + s->overlap * 2) ||
         (inlink->format != ctx->inputs[1]->format) ||
-        desc->comp[0].depth > 8) {
+        (desc->comp[0].depth > 16)) {
         av_log(ctx, AV_LOG_ERROR, "Incompatible inputs for GoPro Max.\n");
         return AVERROR(EINVAL);
     }
+
+    s->gopro_remap_line = (desc->comp[0].depth > 8) ? gopro_remap_line_16bit_c : gopro_remap_line_8bit_c;
 
     err = config_output(ctx->outputs[0]);
     if (err < 0)
@@ -5208,7 +5218,7 @@ static int v360gopro_config_output(AVFilterLink *outlink)
     if (!s->work)
         return AVERROR(ENOMEM);
     for (int i = 0; i < s->nb_threads; i++) {
-        s->work[i] = av_calloc(cube_size, sizeof(uint8_t) * 2);
+        s->work[i] = av_calloc(cube_size + 256, sizeof(uint8_t) * 2);
         if (!s->work[i])
             return AVERROR(ENOMEM);
     }
