@@ -5081,7 +5081,7 @@ static void gopro_remap_line_##bits##bit_c(void *dst, const void *const src, voi
     uint##bits##_t *d = dst;                                                             \
                                                                                          \
     gopro_remap_cube_##bits##bit_c(d, p, buf, cube_size,                                 \
-                                   gp_cube_width, cube_sub, overlap);                    \
+                                   gp_cube_width, cube_sub + overlap / 6, overlap / 6 * 5);                    \
     p += gp_cube_width;                                                                  \
     d += cube_size;                                                                      \
                                                                                          \
@@ -5090,7 +5090,7 @@ static void gopro_remap_line_##bits##bit_c(void *dst, const void *const src, voi
     d += cube_size;                                                                      \
                                                                                          \
     gopro_remap_cube_##bits##bit_c(d, p, buf, cube_size,                                 \
-                                   gp_cube_width, cube_sub, overlap);                    \
+                                   gp_cube_width, cube_sub - overlap / 6, overlap / 6 * 7);                    \
 }
 
 DEFINE_GOPRO_REMAP_LINE( 8)
@@ -5192,6 +5192,9 @@ static int v360gopro_config_output(AVFilterLink *outlink)
     err = ff_framesync_init_dualinput(&s->fs, ctx);
     if (err  < 0)
         return err;
+
+    if ((inlink->w > inlink->h * 3 + s->overlap * 2) && (s->overlap == 64))
+        s->overlap = 96;
 
     if ((inlink->w != ctx->inputs[1]->w) ||
         (inlink->h != ctx->inputs[1]->h) ||
