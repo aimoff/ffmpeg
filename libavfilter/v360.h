@@ -20,7 +20,10 @@
 
 #ifndef AVFILTER_V360_H
 #define AVFILTER_V360_H
+#include "config_components.h"
+
 #include "avfilter.h"
+#include "framesync.h"
 
 enum StereoFormats {
     STEREO_2D,
@@ -177,6 +180,20 @@ typedef struct V360Context {
 
     SliceXYRemap *slice_remap;
     unsigned map[AV_VIDEO_MAX_PLANES];
+
+#if CONFIG_V360GOPRO_FILTER
+    FFFrameSync fs;
+
+    int gopromax;
+    int overlap;
+
+    int hsub[AV_VIDEO_MAX_PLANES], vsub[AV_VIDEO_MAX_PLANES];
+    uint8_t **work;
+
+    void (*gopro_remap_line)(void *dst, const void *const src, void *buf,
+                             int cube_size, const int gp_cube_width,
+                             const int cube_sub, const int overlap);
+#endif
 
     int (*in_transform)(const struct V360Context *s,
                         const float *vec, int width, int height,
