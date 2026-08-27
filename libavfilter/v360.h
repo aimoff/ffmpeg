@@ -20,6 +20,7 @@
 
 #ifndef AVFILTER_V360_H
 #define AVFILTER_V360_H
+#include "config_components.h"
 #include "avfilter.h"
 
 enum StereoFormats {
@@ -55,6 +56,7 @@ enum Projections {
     ORTHOGRAPHIC,
     OCTAHEDRON,
     CYLINDRICALEA,
+    GOPROMAX,
     NB_PROJECTIONS,
 };
 

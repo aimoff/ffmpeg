@@ -25,10 +25,12 @@
 layout (local_size_x_id = 253, local_size_y_id = 254, local_size_z_id = 255) in;
 
 #define EQUIRECTANGULAR  0
+#define EQUIANGULAR      3
 #define FLAT             4
 #define DUAL_FISHEYE     5
 #define STEREOGRAPHIC    8
 #define FISHEYE         13
+#define GOPROMAX        25
 layout (constant_id = 0) const int out_transform = 0;
 layout (constant_id = 1) const int in_transform = 0;
 
@@ -42,8 +44,17 @@ layout (constant_id = 7) const int in_h = 0;
 layout (constant_id = 8) const int in_chroma_w = 0;
 layout (constant_id = 9) const int in_chroma_h = 0;
 
+layout (constant_id = 10) const int gp_cube_size = 0;
+layout (constant_id = 11) const int gp_face1_u = 0;
+layout (constant_id = 12) const int gp_face2_u = 0;
+layout (constant_id = 13) const int gp_blend1_u = 0;
+layout (constant_id = 14) const int gp_blend2_u = 0;
+layout (constant_id = 15) const int gp_blend3_u = 0;
+layout (constant_id = 16) const int gp_overlap = 0;
+
 layout (set = 0, binding = 0) uniform sampler2D input_img[];
 layout (set = 0, binding = 1) uniform writeonly image2D output_img[];
+layout (set = 0, binding = 2) uniform sampler2D input2_img[];
 
 layout (push_constant, scalar) uniform pushConstants {
     mat4 rot_mat;
@@ -58,7 +69,19 @@ ivec2 in_img_size[4] = {
     ivec2(in_w, in_h)
 };
 
+ivec3 gp_face_u = ivec3(0, gp_face1_u, gp_face2_u);
+ivec3 gp_blend_u = ivec3(gp_blend1_u, gp_blend2_u, gp_blend3_u);
+
 #define IS_WITHIN(v1, v2) any(lessThan(v1, v2))
+
+float atan2(in float y, in float x)
+{
+    return abs(x) < 1e-6 ? sign(y) * m_pi2 : atan(y, x);
+}
+vec2 atan2(in vec2 v, in float z)
+{
+    return abs(z) < 1e-6 ? sign(v) * m_pi2 : atan(v, vec2(z));
+}
 
 void xyz_to_flat(uint idx, in vec3 v, in ivec2 pos, in ivec2 in_size)
 {
@@ -166,6 +189,126 @@ void xyz_to_dfisheye(uint idx, in vec3 v, in ivec2 pos, in ivec2 in_size)
     imageStore(output_img[idx], pos, res);
 }
 
+// FIXME: no padding
+vec3 eac_to_xyz(in ivec2 out_size, in ivec2 pos)
+{
+    const ivec2 cube_size = out_size / ivec2(3, 2);
+    const ivec2 face = pos / cube_size;
+    const vec2 e_uv = vec2(pos % cube_size) / vec2(cube_size);
+    const int f = face.y * 3 + face.x;
+    vec3 v;
+    vec2 uv;
+
+    uv.x = (e_uv.x >= 1.0) ? 1.0 : tan((e_uv.x - 0.5) * m_pi2);
+    uv.y = (e_uv.y >= 1.0) ? 1.0 : tan((e_uv.y - 0.5) * m_pi2);
+
+    // limited cube_to_xyz
+    switch (f) {
+    case 0:
+        v = vec3(-1.0, uv.y, uv.x);
+        break;
+    case 1:
+        v = vec3(uv.x, uv.y, 1.0);
+        break;
+    case 2:
+        v = vec3(1.0, uv.y, -uv.x);
+        break;
+    case 3:
+        v = vec3(-uv.y, 1.0, -uv.x);
+        break;
+    case 4:
+        v = vec3(-uv.y, -uv.x, -1.0);
+        break;
+    case 5:
+        v = vec3(-uv.y, -1.0, uv.x);
+        break;
+    }
+
+    return normalize(v);
+}
+
+// face order : LEFT, FRONT, RIGHT, DOWN, BACK, UP
+vec3 xzy_to_eac_cube(in vec3 v)
+{
+    vec3 a = abs(v);
+    int face;
+    vec3 view;
+    vec2 uv;
+
+    if (a.x >= a.y && a.x >= a.z) {
+        if (v.x >= 0.0) { // +X
+            face = 2;
+            view = vec3(-v.z,  v.y, a.x);
+        }
+        else { // -X
+            face = 0;
+            view = vec3( v.z,  v.y, a.x);
+        }
+    }
+    else if (a.y >= a.z) {
+        if (v.y >= 0.0) { // +Y
+            face = 3;
+            view = vec3(-v.z, -v.x, a.y);
+        }
+        else { // -Y
+            face = 5;
+            view = vec3( v.z, -v.x, a.y);
+        }
+    }
+    else {
+        if (v.z >= 0.0) { // +Z
+            face = 1;
+            view = vec3( v.x,  v.y, a.z);
+        }
+        else { // -Z
+            face = 4;
+            view = vec3(-v.y, -v.x, a.z);
+        }
+    }
+    uv = atan2(view.xy, view.z) / m_pi2 + 0.5;
+
+    return vec3(uv.x, uv.y, float(face));
+}
+
+void xyz_to_gopro(uint idx, in vec3 v, in ivec2 pos, in ivec2 in_size)
+{
+    vec3 uvf = xzy_to_eac_cube(v);
+    vec2 uv = vec2(uvf.xy);
+    int u_face = int(uvf.z) % 3;
+    int v_face = int(uvf.z) / 3;
+    float cs = float(gp_cube_size);
+    float ol = float(gp_overlap);
+    vec3 fu = vec3(gp_face_u);
+    vec3 bu = vec3(gp_blend_u);
+    float gratio = fu[1] * (cs - ol) / cs;
+    float bw = ol / gratio;
+    vec2 p1 = uv, p2 = uv;
+    float a = 0.0;
+
+    if (u_face == 1)
+        p1.x = uv.x * cs;
+    else {
+        p1.x = uv.x * gratio;
+        p2.x = (uv.x + bw) * gratio;
+        if (p2.x > bu[2])
+            p1.x = p2.x;
+        else if (p1.x >= bu[0])
+            a = (p1.x - bu[0]) / ol;
+    }
+    p1.x += fu[u_face];
+    p1.x /= float(in_img_size[0]);
+
+    vec4 res = (v_face > 0) ? texture(input2_img[idx], p1) : texture(input_img[idx], p1);
+    if (a > 0.0) {
+        p2.x += fu[u_face];
+        p2.x /= float(in_img_size[0]);
+        vec4 res2 = (v_face > 0) ? texture(input2_img[idx], p2) : texture(input_img[idx], p2);
+        res = mix(res, res2, a);
+    }
+
+    imageStore(output_img[idx], pos, res);
+}
+
 void main()
 {
     ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
@@ -178,6 +321,9 @@ void main()
         switch (out_transform) {
         case EQUIRECTANGULAR:
 	        v = equirect_to_xyz(out_size, pos);
+	        break;
+        case EQUIANGULAR:
+	        v = eac_to_xyz(out_size, pos);
 	        break;
 	    case FLAT:
 	        v = flat_to_xyz(out_size, pos);
@@ -210,6 +356,9 @@ void main()
 	        break;
 	    case FISHEYE:
 	        xyz_to_fisheye(i, v, pos, in_size);
+	        break;
+	    case GOPROMAX:
+	        xyz_to_gopro(i, v, pos, in_size);
 	        break;
 	    }
     }
