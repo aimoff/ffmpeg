@@ -53,6 +53,7 @@ typedef struct V360ulkanContext {
     float yaw, pitch, roll;
     char *rorder;
     int   rotation_order[3];
+    int   overlap;
 } V360VulkanContext;
 
 static int get_rorder(char c)
@@ -199,6 +200,7 @@ static void config_params(AVFilterContext *ctx, AVFilterLink *inlink)
             s->iv_fov = 180.f;
         break;
     case EQUIRECTANGULAR: /* unchangeable */
+    case GOPROMAX:
         s->ih_fov = 360.f;
         s->iv_fov = 180.f;
         break;
@@ -334,6 +336,9 @@ static av_cold int calculate_output_size(AVFilterContext *ctx)
         case DUAL_FISHEYE:
             hf = wf * sar / 2.f;
             break;
+        case EQUIANGULAR:
+            hf = wf * sar / 3.f * 2.f;
+            break;
         case STEREOGRAPHIC:
         case FISHEYE:
             hf = wf * sar;
@@ -375,6 +380,9 @@ static av_cold int calculate_output_size(AVFilterContext *ctx)
         case DUAL_FISHEYE:
             wf = hf * 2.f;
             break;
+        case EQUIANGULAR:
+            wf = hf * 3.f / 2.f;
+            break;
         case STEREOGRAPHIC:
         case FISHEYE:
             wf = hf;
@@ -403,6 +411,10 @@ static av_cold int calculate_output_size(AVFilterContext *ctx)
         min_w = 2;
         min_h = 1;
         break;
+    case EQUIANGULAR:
+        min_w = 3;
+        min_h = 2;
+        break;
     default:
         min_w = 1;
         min_h = 1;
@@ -413,6 +425,15 @@ static av_cold int calculate_output_size(AVFilterContext *ctx)
                "Output %dx%d is too small for the output projection "
                "(requires at least %dx%d per plane).\n", pw, ph, min_w, min_h);
         return AVERROR(EINVAL);
+    }
+
+    if (s->in == GOPROMAX && s->overlap == 0) {
+        if (inlink->h <= 1920)
+            s->overlap = 32;
+        else if (inlink->h < 3840)
+            s->overlap = 64;
+        else
+            s->overlap = 96;
     }
 
     return 0;
@@ -437,7 +458,7 @@ static av_cold int init_filter(AVFilterContext *ctx, AVFrame *in)
 
     RET(ff_vk_exec_pool_init(vkctx, s->qf, &s->e, s->qf->num*4, 0, 0, 0, NULL));
 
-    SPEC_LIST_CREATE(sl, 10, 7*sizeof(int) + 3*sizeof(float))
+    SPEC_LIST_CREATE(sl, 13, 10*sizeof(int) + 3*sizeof(float))
     SPEC_LIST_ADD(sl, 0, 32, s->out);
     SPEC_LIST_ADD(sl, 1, 32, s->in);
 
@@ -451,6 +472,15 @@ static av_cold int init_filter(AVFilterContext *ctx, AVFrame *in)
     SPEC_LIST_ADD(sl, 7, 32, in->height);
     SPEC_LIST_ADD(sl, 8, 32, FF_CEIL_RSHIFT(in->width, desc->log2_chroma_w));
     SPEC_LIST_ADD(sl, 9, 32, FF_CEIL_RSHIFT(in->height, desc->log2_chroma_h));
+
+    if (s->in == GOPROMAX) {
+        int cube_size = in->height / 2;
+        int gopro_cube_width = (in->width - cube_size) / 2;
+
+        SPEC_LIST_ADD(sl, 10, 32, cube_size);
+        SPEC_LIST_ADD(sl, 11, 32, gopro_cube_width);
+        SPEC_LIST_ADD(sl, 12, 32, s->overlap);
+    }
 
     ff_vk_shader_load(&s->shd, VK_SHADER_STAGE_COMPUTE_BIT,
                       sl, (uint32_t []) { 16, 16, 1 }, 0);
@@ -578,10 +608,12 @@ static const AVOption v360_vulkan_options[] = {
     {  "dfisheye", "dual fisheye",                                 0, AV_OPT_TYPE_CONST,  {.i64=DUAL_FISHEYE},    0,                   0,   FLAGS, "in" },
     {        "sg", "stereographic",                                0, AV_OPT_TYPE_CONST,  {.i64=STEREOGRAPHIC},   0,                   0,   FLAGS, "in" },
     {   "fisheye", "fisheye",                                      0, AV_OPT_TYPE_CONST,  {.i64=FISHEYE},         0,                   0,   FLAGS, "in" },
+    {     "gopro", "gopro max",                                    0, AV_OPT_TYPE_CONST,  {.i64=GOPROMAX},        0,                   0,   FLAGS, "in" },
 
     {    "output", "set output projection",              OFFSET(out), AV_OPT_TYPE_INT,    {.i64=FLAT},            0,    NB_PROJECTIONS-1,   FLAGS, "out" },
     {         "e", "equirectangular",                              0, AV_OPT_TYPE_CONST,  {.i64=EQUIRECTANGULAR}, 0,                   0,   FLAGS, "out" },
     {  "equirect", "equirectangular",                              0, AV_OPT_TYPE_CONST,  {.i64=EQUIRECTANGULAR}, 0,                   0,   FLAGS, "out" },
+    {       "eac", "equi-angular cubemap",                         0, AV_OPT_TYPE_CONST,  {.i64=EQUIANGULAR},     0,                   0,   FLAGS, "out" },
     {      "flat", "regular video",                                0, AV_OPT_TYPE_CONST,  {.i64=FLAT},            0,                   0,   FLAGS, "out" },
     {  "dfisheye", "dual fisheye",                                 0, AV_OPT_TYPE_CONST,  {.i64=DUAL_FISHEYE},    0,                   0,   FLAGS, "out" },
     {        "sg", "stereographic",                                0, AV_OPT_TYPE_CONST,  {.i64=STEREOGRAPHIC},   0,                   0,   FLAGS, "out" },
@@ -597,6 +629,7 @@ static const AVOption v360_vulkan_options[] = {
     {     "v_fov", "set output vertical FOV angle",    OFFSET(v_fov), AV_OPT_TYPE_FLOAT,  {.dbl = 0.0f},       0.0f,              360.0f, DYNAMIC, "v_fov" },
     {    "ih_fov", "set input horizontal FOV angle",  OFFSET(ih_fov), AV_OPT_TYPE_FLOAT,  {.dbl = 0.0f},       0.0f,              360.0f, DYNAMIC, "ih_fov" },
     {    "iv_fov", "set input vertical FOV angle",    OFFSET(iv_fov), AV_OPT_TYPE_FLOAT,  {.dbl = 0.0f},       0.0f,              360.0f, DYNAMIC, "iv_fov" },
+    {  "overlap", "overlapped pixcels for GoPro Max", OFFSET(overlap), AV_OPT_TYPE_INT,    {.i64 = 0},            0,                1024,   FLAGS, "overlap" },
 
     { NULL },
 };
